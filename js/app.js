@@ -5,6 +5,7 @@
 import * as store from './store.js';
 import { h, clearActionToasts } from './ui.js';
 import { isValidISODate } from './dates.js';
+import { parseRoute as parseHash } from './routes.js';
 import { registerServiceWorker, requestPersistence } from './pwa.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderDay } from './views/day.js';
@@ -16,20 +17,18 @@ import { renderOnboarding } from './views/onboarding.js';
 import { renderProfile } from './views/profile.js';
 import { renderNutrition } from './views/nutrition.js';
 import { initTimer, configureTimer } from './timer.js';
-import { sessionCSS, applyAppearance, watchSystemTheme, savedAppearance } from './theme.js';
+import { applyAppearance, watchSystemTheme, savedAppearance } from './theme.js';
 
-// Session colours as CSS custom properties (.t-push { --c, --c-block, --c-tint }), from js/theme.js.
-document.head.append(Object.assign(document.createElement('style'), { textContent: sessionCSS() }));
+// Session colours as CSS custom properties (.t-red { --c, --c-block, --c-tint })
+// (css/sessions.css, generated from js/theme.js by tools/build-css.mjs: a file, so the CSP needs no inline style)
 watchSystemTheme();
 
 const main = document.getElementById('view');
 let cleanup = null;
 let lastRoute = '';
 
-function parseRoute() {
-  const [name, ...args] = location.hash.replace(/^#\/?/, '').split('/');
-  return { name: name || 'cal', args: args.map((a) => decodeURIComponent(a)) };
-}
+/** The current route, checked against the allow-list in routes.js. */
+const parseRoute = () => parseHash(location.hash);
 
 let routeSeq = 0;
 
@@ -43,7 +42,9 @@ async function route() {
   if (location.hash !== lastRoute) clearActionToasts();
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
 
-  let { name, args } = parseRoute();
+  let { name, args, invalid } = parseRoute();
+  // A link that isn't on the allow-list (or is malformed) goes to the Calendar instead.
+  if (invalid) { location.replace('#/'); return; }
   // First run: until the five questions are answered or skipped through, every route shows the flow.
   if (store.state.profile.onboarding === 'pending' && name !== 'welcome') {
     history.replaceState(null, '', '#/welcome/1');

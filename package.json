@@ -1,6 +1,6 @@
 {
   "name": "workout-tracker",
-  "version": "1.11.0",
+  "version": "1.13.0",
   "private": true,
   "type": "module",
   "description": "Personal offline workout tracker PWA. No build step; this file only exists for the test/serve scripts.",
@@ -11,6 +11,8 @@
     "icons": "node tools/build-icons.mjs",
     "test:subpath": "node tests/browser/subpath.mjs",
     "build": "node tools/build-site.mjs",
-    "test:update": "node tests/browser/update.mjs"
+    "test:update": "node tests/browser/update.mjs",
+    "test:security": "node tests/browser/security.mjs",
+    "css": "node tools/build-css.mjs"
   }
 }

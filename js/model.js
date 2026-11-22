@@ -6,9 +6,11 @@ import { normalizeProfile, templatesFollowDefaultStep } from './profile.js';
 import { BREAK, BUILTIN_IDS, isTypeId, templateTypeIds, normalizeTypes, withKnownTypes } from './types.js';
 import { cleanMeasurements, normalizeTracked, DEFAULT_TRACKED } from './measure.js';
 import { normalizeNutrition, normalizeIntake } from './nutrition.js';
+import { normalizeSplits } from './splits.js';
+import { LIMITS, safeKey } from './importguard.js';
 
-export const APP_VERSION = '1.11.0'; // keep in sync with VERSION in sw.js (a test checks this)
-export const SCHEMA_VERSION = 9;
+export const APP_VERSION = '1.13.0'; // keep in sync with VERSION in sw.js (a test checks this)
+export const SCHEMA_VERSION = 10;
 
 // Session types are data since v7 (js/types.js): ids are stable, names and colours are editable.
 // BREAK is a deliberate rest day: valid in the schedule and as a logged day, but not a type.
@@ -83,7 +85,7 @@ export function normalizeMuscles(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [k, v] of Object.entries(raw)) {
     const key = exerciseKey(k);
-    if (key && (MUSCLES.includes(v) || v === null)) out[key] = v;
+    if (safeKey(key) && (MUSCLES.includes(v) || v === null)) out[key] = v;
   }
   return out;
 }
@@ -226,7 +228,7 @@ export function normalizeRest(v) {
 export function normalizeTemplates(raw) {
   const out = {};
   // Every lifting type gets a list (built-ins fall back to their defaults); any other known type keeps its own.
-  const ids = new Set([...TEMPLATE_TYPES, ...templateTypeIds(), ...Object.keys(raw ?? {}).filter(isTypeId)]);
+  const ids = new Set([...TEMPLATE_TYPES, ...templateTypeIds(), ...Object.keys(raw ?? {}).filter(isTypeId)].filter(safeKey));
   for (const type of ids) {
     const list = Array.isArray(raw?.[type]) ? raw[type] : DEFAULT_TEMPLATES[type] ?? [];
     const seen = new Set();
@@ -344,7 +346,7 @@ function normalizeExercise(raw) {
   const name = cleanName(raw?.name);
   if (!name) return null;
   const sets = Array.isArray(raw.sets)
-    ? raw.sets.map((s) => ({
+    ? raw.sets.slice(0, LIMITS.setsPerExercise).map((s) => ({
       weight: parseWeight(s?.weight),
       reps: parseReps(s?.reps),
       done: s?.done !== false,
@@ -380,7 +382,7 @@ export function normalizeSession(raw) {
     v: SCHEMA_VERSION,
     date: raw.date,
     type,
-    exercises: Array.isArray(raw.exercises) ? raw.exercises.map(normalizeExercise).filter(Boolean) : [],
+    exercises: Array.isArray(raw.exercises) ? raw.exercises.slice(0, LIMITS.exercisesPerSession).map(normalizeExercise).filter(Boolean) : [],
     cardioMinutes: parseMinutes(raw.cardioMinutes),
     notes: typeof raw.notes === 'string' ? raw.notes.slice(0, 10000) : '',
     startedAt: Number.isFinite(raw.startedAt) && raw.startedAt > 0 ? raw.startedAt : null,
@@ -459,6 +461,8 @@ export const SESSION_MIGRATIONS = {
   7: (s) => ({ ...s, v: 8 }),
   // v8 → v9: sessions unchanged; optional nutrition targets and an intake log are new (nutrition.js).
   8: (s) => ({ ...s, v: 9 }),
+  // v9 → v10: sessions unchanged; saved splits are new (splits.js).
+  9: (s) => ({ ...s, v: 10 }),
 };
 
 // ---------------------------------------------------------------------------
@@ -566,6 +570,15 @@ export const BACKUP_MIGRATIONS = {
     nutrition: data.nutrition ?? null,
     intake: data.intake ?? {},
   }),
+  // v9 → v10: no saved splits yet.
+  9: (data) => ({
+    ...data,
+    schemaVersion: 10,
+    sessions: Array.isArray(data.sessions)
+      ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[9](s) : s))
+      : data.sessions,
+    splits: Array.isArray(data.splits) ? data.splits : [],
+  }),
 };
 
 /** Upgrade a stored session record. Returns { session, changed }. */
@@ -631,6 +644,9 @@ export function migrateBackup(input, today = toISODate(new Date())) {
 
 function readBackup(data, today, sessionTypes) {
 
+  // Limits: a real backup is far below these; a file past them is refused with a clear message.
+  if (data.sessions.length > LIMITS.sessions) throw new Error(`This backup has ${data.sessions.length.toLocaleString()} workouts; VANE imports at most ${LIMITS.sessions.toLocaleString()}. Nothing was imported.`);
+  if (Array.isArray(data.body) && data.body.length > LIMITS.body) throw new Error(`This backup has ${data.body.length.toLocaleString()} Body log entries; VANE imports at most ${LIMITS.body.toLocaleString()}. Nothing was imported.`);
   const byDate = new Map();
   let skipped = 0;
   for (const raw of data.sessions) {
@@ -651,12 +667,13 @@ function readBackup(data, today, sessionTypes) {
     templates: data.templates ? normalizeTemplates(data.templates) : null,
     body: (Array.isArray(data.body) ? data.body : []).map(normalizeBodyEntry).filter(Boolean),
     muscles: normalizeMuscles(data.muscles),
-    exercises: Array.isArray(data.exercises) ? data.exercises.map(normalizeCatalogRecord).filter(Boolean) : null,
+    exercises: Array.isArray(data.exercises) ? data.exercises.slice(0, LIMITS.exercises).map(normalizeCatalogRecord).filter(Boolean) : null,
     skipReasons: normalizeSkipReasons(data.skipReasons),
     profile: data.profile ? normalizeProfile(data.profile) : null,
     sessionTypes,
     nutrition: normalizeNutrition(data.nutrition),
     intake: normalizeIntake(data.intake),
+    splits: normalizeSplits(data.splits),
     skipped,
   };
 }

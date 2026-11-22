@@ -1,6 +1,6 @@
 // Offline-first service worker: precache the whole app, serve from cache, update atomically.
 // Bump VERSION on every deploy (must match APP_VERSION in js/model.js — a test checks this).
-const VERSION = '1.11.0';
+const VERSION = '1.13.0';
 const CACHE = `workout-tracker-${VERSION}`;
 
 const ASSETS = [
@@ -22,6 +22,11 @@ const ASSETS = [
   './js/types.js',
   './js/measure.js',
   './js/nutrition.js',
+  './js/splits.js',
+  './js/routes.js',
+  './js/importguard.js',
+  './js/boot.js',
+  './css/sessions.css',
   './js/views/nutrition.js',
   './js/views/onboarding.js',
   './js/views/profile.js',
@@ -77,11 +82,16 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// Only GET requests for this origin AND inside this app's own path (/VANE/ on GitHub Pages, where other
+// sites can share the origin) are handled; anything else goes straight to the network, untouched.
+const SCOPE_PATH = new URL(self.registration.scope).pathname;
+const STATIC = /\.(?:js|css|json|woff2|png|svg|webmanifest|txt)$/;
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin || !url.pathname.startsWith(SCOPE_PATH)) return;
 
   if (req.mode === 'navigate') {
     // App shell: always the cached index.html (routing happens in the hash).
@@ -97,7 +107,8 @@ self.addEventListener('fetch', (event) => {
     const hit = await cache.match(req, { ignoreSearch: true });
     if (hit) return hit;
     const res = await fetch(req);
-    if (res.ok && res.type === 'basic') cache.put(req, res.clone());
+    // Runtime-cache only plain same-origin static files (never redirects, errors or anything else).
+    if (res.ok && res.type === 'basic' && !res.redirected && STATIC.test(url.pathname)) cache.put(req, res.clone());
     return res;
   })());
 });

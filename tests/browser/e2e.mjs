@@ -1298,6 +1298,109 @@ for (const width of [320, 412]) {
   await go('#/day/2026-11-24');
   await shot(`42-day-bro-${width}`);
 }
+// ---------------- saved splits: "Save as my split" (1.12) ----------------
+await go('#/plan');
+check(await exists('.save-split') && !(await exists('.my-split')), 'Planner: “Save as my split”, nothing saved yet');
+const broWeekDays = (await store('m.state.schedule')).at(-1).days;
+await click('.save-split');
+await sleep(300);
+await typeInto('#split-name', 'My bro week');
+await click('dialog[open] .type-form button[type=submit]');
+await sleep(500);
+{
+  const sp = (await store('m.state.splits'))[0];
+  check(sp?.name === 'My bro week' && J(sp.days) === J(broWeekDays) && sp.types.map((t) => t.name).join(',') === 'Chest + Triceps,Back + Biceps,Legs,Shoulders,Arms' && sp.templates[sp.types[0].id].length >= 5, 'saved: the week, its five types and their templates');
+}
+check((await text('.my-split .my-split-name')).includes('My bro week') && /Yours/i.test(await text('.my-split .yours')) && (await text('.my-split .my-split-days')) === 'Mon C+T, Tue B+B, Wed Legs, Thu Shldr, Fri Arms', `listed as “Yours” with its days (“${await text('.my-split')}”)`);
+await ev(`document.getElementById('my-splits').scrollIntoView({ block: 'center' }); true`);
+await sleep(150);
+await shot('49-planner-my-splits');
+// Something else for a while: PPL; then change the snapshot's types behind its back.
+await click('.preset-btns [data-preset="ppl"]');
+await sleep(300);
+await click('dialog[open] button[value=ok]');
+await sleep(600);
+const ids = Object.fromEntries((await store('m.state.splits[0].types')).map((t) => [t.name, t.id]));
+await ev(`import('./js/store.js').then(async (m) => {
+  await m.editSessionType(${J(ids['Back + Biceps'])}, { name: 'Pull day 2', color: 'pink' }); // edited
+  await m.createSession('2026-11-07', ${J(ids['Chest + Triceps'])}); // history…
+  await m.removeSessionType(${J(ids['Chest + Triceps'])}); // …so it's archived
+  await m.removeSessionType(${J(ids.Arms)}); // no history: deleted
+  return true;
+})`);
+check((await store(`m.state.types.find(t => t.id === ${J(ids['Chest + Triceps'])}).archived`)) === true && !(await store(`m.state.types.some(t => t.id === ${J(ids.Arms)})`)), 'meanwhile: Chest + Triceps archived, Arms deleted, Back + Biceps renamed');
+const sessionsBefore2 = await store('m.allSessions().length');
+await go('#/plan');
+await click('.my-split-apply');
+await sleep(400);
+{
+  const t = await text('dialog[open] .apply-sheet');
+  check(/Replaces your week from today\. Restores these session types and templates: Chest \+ Triceps, Back \+ Biceps, Legs, Shoulders, Arms\./.test(t), 'confirm sheet: replaces the week from today, lists the types and templates it restores');
+  check(/Chest \+ Triceps was archived: it's restored/.test(t) && /Pull day 2 was called Back \+ Biceps/.test(t) && /Arms was deleted since you saved this split: it's recreated/.test(t), `and says which types it restores, and why (“${t.slice(0, 140)}…”)`);
+  check(/Hidden, not deleted .*: Push, Pull\./.test(t) && /Logged workouts and past days don’t change\./.test(t), 'and which types get hidden (not deleted)');
+}
+await shot('50-apply-split');
+await click('#apply-split');
+await sleep(700);
+{
+  const types = await store('m.state.types');
+  const by = (id) => types.find((t) => t.id === id);
+  const week = (await store('m.state.schedule')).at(-1);
+  check(J(week.days) === J(broWeekDays) && week.from === TODAY, 'applied: the saved week from today');
+  check(by(ids['Back + Biceps']).name === 'Back + Biceps' && by(ids['Chest + Triceps']).archived === false && by(ids.Arms)?.name === 'Arms', 'types restored: renamed one named back, archived one back, deleted one recreated with its id');
+  check(by('Push').hidden && !by('Push').archived && by('Pull').hidden, 'other lifting types hidden, not deleted');
+  check((await store(`m.state.templates[${J(ids.Arms)}].length`)) >= 5, 'templates restored');
+  check((await store('m.allSessions().length')) === sessionsBefore2 && (await sessionOf('2026-11-07'))?.type === ids['Chest + Triceps'] && (await sessionOf('2026-11-16'))?.type === 'Push', 'no logged workout or past day changed');
+}
+// Rename, duplicate, update, delete.
+const splitAction = async (label) => { await click('.my-split .icon-btn'); await sleep(300); await clickText('dialog[open] .menu-item', label); await sleep(300); };
+await splitAction('Rename');
+await typeInto('#split-name', 'Bro week');
+await click('dialog[open] .type-form button[type=submit]');
+await sleep(400);
+await splitAction('Duplicate');
+check(J(await store('m.state.splits.map(s => s.name)')) === J(['Bro week', 'Bro week (copy)']), 'rename and duplicate');
+await ev(`import('./js/store.js').then(async (m) => { await m.saveWeek({ ...m.state.schedule.at(-1).days, sat: 'Legs' }); return true; })`);
+await go('#/plan');
+await splitAction('Save the current week into this split');
+await click('dialog[open] button[value=ok]');
+await sleep(400);
+check((await store('m.state.splits[0].days.sat')) === 'Legs' && (await store('m.state.splits[0].name')) === 'Bro week', '“Save the current week into this split” updates it, keeping its name');
+await ev(`document.querySelectorAll('.my-split .icon-btn')[1].click(); true`);
+await sleep(300);
+await clickText('dialog[open] .menu-item', 'Delete');
+await sleep(300);
+await click('dialog[open] button[value=ok]');
+await sleep(400);
+check(J(await store('m.state.splits.map(s => s.name)')) === J(['Bro week']), 'delete');
+// The 10-split limit.
+await ev(`import('./js/store.js').then(async (m) => { for (let i = 2; i <= 10; i++) await m.saveMySplit('Split ' + i); return true; })`);
+await go('#/');
+await go('#/plan');
+check((await store('m.state.splits.length')) === 10 && (await ev(`document.querySelector('.save-split').disabled`)) && /most there can be/.test(await text('#my-splits')), 'at 10 saved splits, saving is off and says why');
+const exp3 = await ev(`import('./js/store.js').then(m => JSON.parse(JSON.stringify(m.exportPayload())))`);
+check(exp3.splits?.length === 10 && exp3.splits[0].name === 'Bro week', 'JSON export includes saved splits');
+check((await ev(`import('./js/model.js').then(m => m.migrateBackup(${J(exp3)}).splits.length)`)) === 10, 'they survive export → import');
+await ev(`import('./js/store.js').then(async (m) => { for (const s of m.state.splits.slice(1)) await m.deleteMySplit(s.id); return true; })`);
+for (let i = 0; i < 50 && (await ev(`[...document.querySelectorAll('#toasts .toast')].some(t => !t.hidden && t.getClientRects().length)`)); i++) await sleep(200);
+for (const width of [320, 412]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
+  await go('#/');
+  await go('#/plan');
+  check((await ev(`document.querySelectorAll('.my-split').length`)) === 1, `${width} px: the Planner shows the one saved split left`);
+  await ev(`document.getElementById('my-splits').scrollIntoView({ block: 'center' }); true`);
+  await sleep(150);
+  const over = await ev(`(()=>{const w=innerWidth; return [...document.querySelectorAll('main *')].filter(e => { const r=e.getBoundingClientRect(); return r.width && (r.right > w + 1 || r.left < -1); }).slice(0,3).map(e => e.className || e.tagName)})()`);
+  check((await ev(`document.documentElement.scrollWidth <= innerWidth`)) && over.length === 0, `${width} px Planner with a saved split: nothing spills sideways${over.length ? ` (${J(over)})` : ''}`);
+  await shot(`49-planner-my-splits-${width}`);
+  await click('.my-split-apply');
+  await sleep(400);
+  await shot(`50-apply-split-${width}`);
+  await ev(`document.querySelector('dialog[open] .apply-sheet .btn.subtle').click(); true`);
+  await sleep(200);
+}
+await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
+
 // Progress sub-tabs: a cut-off tab always sits under a visible edge fade, and every tab can be reached.
 for (const width of [320, 360, 412]) {
   await send('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
@@ -1431,6 +1534,20 @@ await click('.ob-next');
 await sleep(800);
 check((await ev('location.hash')) === '#/plan' && (await store('m.state.profile.split')) === 'custom', 'Custom: Start opens the Planner');
 check(J((await store('m.state.schedule')).at(-1).days) === J({ mon: 'Push', tue: 'Pull', wed: 'Legs', thu: 'Break', fri: 'Upper', sat: 'Lower', sun: 'Break' }), 'Custom keeps the existing plan');
+// Onboarding lists your saved splits when there are any.
+await ev(`import('./js/store.js').then((m) => m.eraseAll()).then(() => true)`);
+await ev(`import('./js/store.js').then(async (m) => { await m.saveWeek({ sun: 'Break', mon: 'Upper', tue: 'Lower', wed: 'Break', thu: 'Full body', fri: 'Break', sat: 'Break' }); await m.saveMySplit('My 3-day'); await m.saveWeek({ sun: 'Break', mon: 'Push', tue: 'Pull', wed: 'Legs', thu: 'Break', fri: 'Upper', sat: 'Lower' }); return true; })`);
+await go('#/');
+for (let i = 1; i <= 3; i++) { await click('.ob-skip'); await sleep(400); }
+const myId = await store('m.state.splits[0].id');
+check((await exists(`input[name=split][value="my:${myId}"]`)) && /My 3-day \(yours\)/.test(await text('main')) && (await text(`#split-days-my-${myId}`)) === 'Mon Upper, Tue Lower, Thu Full', 'onboarding lists your saved split, with its days');
+await pick('split', `my:${myId}`);
+await click('.ob-next');
+await sleep(500);
+await click('.ob-next');
+await sleep(800);
+check((await ev('location.hash')) === '#/' && J((await store('m.state.schedule')).at(-1).days) === J({ sun: 'Break', mon: 'Upper', tue: 'Lower', wed: 'Break', thu: 'Full body', fri: 'Break', sat: 'Break' }) && (await store('m.state.settings.weeklyMin')) === 3, 'picking it applies it (3 sessions a week) and Start opens the Calendar');
+
 check(externalRequests.length === 0, `no network calls outside the app${externalRequests.length ? `: ${externalRequests.slice(0, 3).join(', ')}` : ''}`);
 
 // ---------------- home-screen icon (a preview page: the real launcher draws the installed icon) ----------------

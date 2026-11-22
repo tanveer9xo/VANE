@@ -6,14 +6,19 @@ import * as store from '../store.js';
 import { APP_NAME } from '../brand.js';
 import { BREAK, WEEKDAY_KEYS } from '../model.js';
 import { PRESETS, presetWeek, typeColor, typeShort, typeName, allTypes, autoShort, BREAK as TYPE_BREAK } from '../types.js';
+import { splitDaysText } from '../splits.js';
 import { GOALS, EXPERIENCE, SPLITS, SESSION_CHOICES, SPLIT_SESSIONS, experienceSettings } from '../profile.js';
 import { STEP_CHOICES, CM_PER_IN, parseShownW } from '../units.js';
 import { todayISO, weekdayLabels } from '../dates.js';
 
 export const STEPS = 5;
 
+const savedSplit = (id) => (typeof id === 'string' && id.startsWith('my:') ? store.state.splits.find((s) => s.id === id.slice(3)) ?? null : null);
+
 /** The days a split trains, in your week order: "Mon Push, Wed Pull, Fri Legs". */
 export function splitDays(splitId, sessions, weekStartsOn = 1) {
+  const mine = savedSplit(splitId);
+  if (mine) return splitDaysText(mine, weekdayLabels(weekStartsOn).map((l) => l.abbr), weekStartsOn);
   const preset = PRESETS[splitId];
   if (!preset) return 'You plan the days in the Planner';
   const shortOf = (name) => allTypes().find((t) => !t.archived && t.name.toLowerCase() === name.toLowerCase())?.short ?? autoShort(name);
@@ -91,7 +96,7 @@ export function renderOnboarding(root, stepArg) {
     let sessionsQ;
     const ws = store.state.settings.weekStartsOn;
     // Each split card lists its actual days; they follow the sessions-per-week choice (updated in place).
-    const refreshDays = () => Object.keys(SPLITS).forEach((id) => {
+    const refreshDays = () => Object.keys(SPLITS).forEach((id) => { // saved splits have fixed days
       const el = document.getElementById(`split-days-${id}`);
       if (el) el.textContent = splitDays(id, draft.sessionsPerWeek, ws);
     });
@@ -100,12 +105,14 @@ export function renderOnboarding(root, stepArg) {
       SESSION_CHOICES.map((n) => tile({ name: 'sessions', value: String(n), label: String(n), compact: true, checked: draft.sessionsPerWeek === n, onpick: (v) => { draft.sessionsPerWeek = Number(v); refreshDays(); } })));
     sessionsQ = sessionsField();
     content = [h('h1', { tabindex: '-1' }, 'How do you split your week?'),
-      fieldset('Training split', 'split sr-legend', Object.entries(SPLITS).map(([id, label]) => tile({
-        name: 'split', value: id, label, iconName: SPLIT_ICON[id],
-        sub: splitDays(id, draft.sessionsPerWeek, ws), subId: `split-days-${id}`,
+      fieldset('Training split', 'split sr-legend', [...Object.entries(SPLITS).filter(([id]) => id !== 'custom'), ...store.state.splits.map((sp) => [`my:${sp.id}`, sp.name]), ['custom', SPLITS.custom]].map(([id, label]) => tile({
+        name: 'split', value: id, label: id.startsWith('my:') ? `${label} (yours)` : label, iconName: SPLIT_ICON[id] ?? 'star',
+        sub: splitDays(id, draft.sessionsPerWeek, ws), subId: `split-days-${id.replace(':', '-')}`,
         checked: draft.split === id,
         onpick: (v) => {
-          if (!draft.sessionsPerWeek) { draft.sessionsPerWeek = SPLIT_SESSIONS[v]; drawSessions(); refreshDays(); }
+          const mine = savedSplit(v);
+          if (mine) { draft.sessionsPerWeek = Object.values(mine.days).filter((t) => t && t !== TYPE_BREAK).length; drawSessions(); refreshDays(); }
+          else if (!draft.sessionsPerWeek) { draft.sessionsPerWeek = SPLIT_SESSIONS[v]; drawSessions(); refreshDays(); }
           draft.split = v;
           // The next question sits below: bring it into view, clear of the Next button.
           sessionsQ.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -113,7 +120,9 @@ export function renderOnboarding(root, stepArg) {
       }))),
       sessionsQ,
       h('p', { class: 'ob-note' }, 'Sessions per week is your “good week” on Consistency. You can change it there too.')];
-    save = () => ({ split: draft.split, sessionsPerWeek: draft.sessionsPerWeek });
+    // A saved split is applied as saved (its own days); the profile records it as your own plan.
+    save = () => (savedSplit(draft.split) ? { split: 'custom', sessionsPerWeek: draft.sessionsPerWeek, mySplit: draft.split.slice(3) }
+      : { split: draft.split, sessionsPerWeek: draft.sessionsPerWeek });
   } else {
     const lb = units() === 'lb';
     const num = (id, key, unit, label) => h('span', { class: 'ob-num' },
@@ -143,7 +152,7 @@ export function renderOnboarding(root, stepArg) {
   async function finish(answers) {
     if (answers?.body) await store.saveBodyEntry({ date: todayISO(), ...answers.body });
     await store.saveProfile({ onboarding: 'done' });
-    const custom = draft.split === 'custom';
+    const custom = draft.split === 'custom'; // a saved split is not "Custom": it already has its days
     draft = null;
     document.body.classList.remove('onboarding');
     location.replace(custom ? '#/plan' : '#/');
@@ -154,7 +163,9 @@ export function renderOnboarding(root, stepArg) {
     const patch = save();
     if (patch === false) return;
     if (step === STEPS) { await finish(patch); return; }
-    await store.saveProfile(patch);
+    const { mySplit, ...profilePatch } = patch;
+    await store.saveProfile(profilePatch, { applySplit: !mySplit });
+    if (mySplit) await store.useMySplit(mySplit);
     goTo(step + 1);
   }
   async function skip() {

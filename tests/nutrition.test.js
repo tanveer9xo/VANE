@@ -99,7 +99,7 @@ test('intake log: manual daily totals only', () => {
 });
 
 test('v8 → v9: nutrition off and empty; everything else kept', () => {
-  assert.equal(SCHEMA_VERSION, 9);
+  assert.ok(SCHEMA_VERSION >= 9);
   const out = migrateBackup({ schemaVersion: 8, sessions: [], body: [{ date: '2026-11-01', weight: 80 }], profile: { goal: 'fat' } });
   assert.deepEqual(out.nutrition, { ...DEFAULT_NUTRITION });
   assert.deepEqual(out.intake, {});

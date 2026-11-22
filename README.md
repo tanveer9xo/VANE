@@ -220,7 +220,7 @@ Run through this on a real phone after deploying, since browsers differ here.
 
 The repository root *is* the site. All paths are relative, so it works at a domain root or a sub-path such as `username.github.io/workout-tracker/`.
 
-**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.11.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
+**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.13.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
 
 ### GitHub Pages
 The repo `VANE` is served at `https://<you>.github.io/VANE/`. Every URL in the app is relative (manifest `start_url`/`scope`/`id` are `./`, the service worker registers `./sw.js` and precaches `./…`), so the sub-path just works. `npm run test:subpath` proves it: it serves the built site under `/VANE/` and checks the service worker scope, the precache, the manifest, Chrome's install criteria and offline use.
@@ -345,6 +345,19 @@ Backup file: `{ app, schemaVersion: 9, appVersion, exportedAt, units: 'kg' (stor
 - **Your choices:** tap it to update, or dismiss it until Settings → About → Check for updates brings it back. About shows the version.
 - **Data is never touched:** updating saves any edit in progress first, then replaces only the app's own file cache (`workout-tracker-*`). IndexedDB and localStorage stay as they are.
 - **Tested:** `npm run test:update` bumps the version on a test server and checks the banner, Dismiss, the reload and that every record survives.
+
+### Saved splits (1.12)
+- **Saving:** Planner → **Save as my split** names a snapshot of the current week: the 7 days, the session types it uses (name, short label, colour) and their templates (exercises, sets, rep ranges, rest and step).
+- **Where they appear:** under "Start from a split", marked **Yours**, next to the presets. Each one can be applied, renamed, duplicated, updated ("Save the current week into this split") or deleted. You can keep up to 10.
+- **Applying:** a confirm sheet says exactly what changes first. Your week is replaced from today, and the split's types and templates are restored exactly as saved: a type renamed, archived or deleted since comes back, and the sheet says which. Other lifting types are hidden, not deleted. Logged workouts and past days never change.
+- **Elsewhere:** saved splits are in JSON export and import (schema v10), and in onboarding's split list when any exist.
+
+### Security (1.13)
+See [SECURITY.md](SECURITY.md) for the threat model, the CSP and its meta-tag limits, and the shared-origin caveat for `<username>.github.io`.
+- **In short:** everything you type or import is rendered as text, and imports are size-, depth- and count-capped with prototype keys refused. Deep links go through an allow-list (`js/routes.js`). The strict CSP allows no inline script, no eval and no other hosts.
+- **Service worker:** it handles same-origin GET requests inside its own path only.
+- **CI:** the actions are pinned to commit SHAs, with least-privilege permissions and Dependabot.
+- **Tests:** `npm run test:security` exercises all of this in a real browser.
 
 ### Recomp and nutrition (1.11)
 - **Recomp goal:** "Recomp (lose fat, build muscle)" is a goal in onboarding and Profile. Its hints and weekly review judge waist, strength and the weight trend together; the review leads with waist.

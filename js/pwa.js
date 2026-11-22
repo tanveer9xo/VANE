@@ -91,7 +91,8 @@ export function registerServiceWorker({ onBeforeUpdate } = {}) {
   });
   const offerUpdate = (reg) => showUpdateBanner(reg);
 
-  navigator.serviceWorker.register('./sw.js').then((reg) => {
+  // updateViaCache 'none': update checks always ask the network, never the HTTP cache.
+  navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }).then((reg) => {
     registration = reg;
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg);
     reg.addEventListener('updatefound', () => {

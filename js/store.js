@@ -19,6 +19,9 @@ import {
 import { setUnits, units } from './units.js';
 import { DEFAULT_NUTRITION, normalizeNutrition, normalizeIntake } from './nutrition.js';
 import {
+  snapshotSplit, applySavedSplit, addSplit, renameSplit, duplicateSplit, updateSplit, deleteSplit, normalizeSplits,
+} from './splits.js';
+import {
   setTypes, defaultTypes, normalizeTypes, addType, updateType, deleteType, applyPreset, PRESETS, PRESET_TEMPLATES,
 } from './types.js';
 
@@ -36,6 +39,7 @@ export const state = {
   types: defaultTypes(), // session types (schema v7) — see types.js
   nutrition: { ...DEFAULT_NUTRITION }, // optional targets, off by default (schema v9) — see nutrition.js
   intake: {}, // { date: { kcal, protein } } manual daily totals
+  splits: [], // saved splits (schema v10) — see splits.js
   lastExportAt: null,
 };
 
@@ -55,7 +59,8 @@ export async function init() {
     db.getMeta('sessionTypes'),
   ]);
   // Schema v8 → v9: nothing stored yet means nutrition off and an empty intake log.
-  const [storedNutrition, storedIntake] = await Promise.all([db.getMeta('nutrition'), db.getMeta('intake')]);
+  const [storedNutrition, storedIntake, storedSplits] = await Promise.all([db.getMeta('nutrition'), db.getMeta('intake'), db.getMeta('splits')]);
+  state.splits = normalizeSplits(storedSplits); // v9 → v10: none saved yet
   state.nutrition = normalizeNutrition(storedNutrition);
   state.intake = normalizeIntake(storedIntake);
   // Schema v6 → v7: session types become data. Without a stored list, the built-ins (whose ids are the old
@@ -372,6 +377,43 @@ export async function usePreset(presetId, sessions) {
   return r;
 }
 
+// ---- saved splits ("Save as my split") ----
+async function saveSplits(list) {
+  state.splits = list;
+  await db.setMeta('splits', list);
+}
+const currentSnapshot = (name, id) => snapshotSplit({
+  name, id, week: state.schedule.at(-1)?.days ?? {}, types: state.types, templates: state.templates,
+});
+/** Save the current week, its types and templates under a name. Throws on no name, a clash or the 10 limit. */
+export async function saveMySplit(name) {
+  const split = currentSnapshot(name);
+  await saveSplits(addSplit(state.splits, split));
+  return split;
+}
+export const renameMySplit = (id, name) => saveSplits(renameSplit(state.splits, id, name));
+export const duplicateMySplit = (id) => saveSplits(duplicateSplit(state.splits, id));
+export const deleteMySplit = (id) => saveSplits(deleteSplit(state.splits, id));
+/** "Save the current week into this split". */
+export async function updateMySplit(id) {
+  const s = state.splits.find((x) => x.id === id);
+  await saveSplits(updateSplit(state.splits, id, currentSnapshot(s?.name ?? 'Split')));
+}
+/** What applying would change (nothing is saved): restored types, hidden types. */
+export function previewMySplit(id) {
+  const split = state.splits.find((x) => x.id === id);
+  return split ? { split, ...applySavedSplit(state.types, state.templates, split) } : null;
+}
+/** Apply a saved split: its types and templates come back as saved, and the week changes from today. */
+export async function useMySplit(id) {
+  const p = previewMySplit(id);
+  if (!p) return null;
+  await saveTypes(p.types);
+  await saveTemplates(p.templates);
+  await saveWeek(p.week);
+  return p;
+}
+
 // ---- nutrition (optional, adults only, on this phone) ----
 export async function saveNutrition(patch) {
   state.nutrition = normalizeNutrition({ ...state.nutrition, ...patch, updatedAt: Date.now() }); // under-18 → off
@@ -446,6 +488,7 @@ export function exportPayload() {
     sessionTypes: state.types, // schema v7: ids are what sessions, plan and templates refer to
     nutrition: state.nutrition, // schema v9 (off unless you switched it on)
     intake: state.intake,
+    splits: state.splits, // schema v10
     settings: state.settings,
     schedule: state.schedule,
     templates: state.templates,
@@ -506,6 +549,10 @@ export async function importData(parsed, mode) {
     const added = parsed.sessionTypes.filter((t) => !mine.has(t.id));
     if (added.length) await saveTypes([...state.types, ...added.map((t, i) => ({ ...t, order: state.types.length + i }))]);
   }
+  // Saved splits: "Replace all" takes the file's; merging keeps yours and adds the file's others (up to 10).
+  const fileSplits = parsed.splits ?? [];
+  await saveSplits(mode === 'replace' ? fileSplits
+    : normalizeSplits([...state.splits, ...fileSplits.filter((f) => !state.splits.some((m) => m.id === f.id || m.name.toLowerCase() === f.name.toLowerCase()))]));
   // Nutrition: "Replace all" takes the file's; merging keeps your settings and adds the file's intake days.
   if (mode === 'replace') {
     state.nutrition = normalizeNutrition(parsed.nutrition);
@@ -547,6 +594,7 @@ export async function eraseAll() {
   setTypes(state.types);
   state.nutrition = { ...DEFAULT_NUTRITION };
   state.intake = {};
+  state.splits = [];
   setUnits('kg');
   pending.forEach((p) => clearTimeout(p.timer));
   pending.clear();

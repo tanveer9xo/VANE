@@ -10,6 +10,7 @@ import {
 } from '../pwa.js';
 import { isCompleted, weekProgress } from '../plan.js';
 import { sessionsToCSV, csvToBackup } from '../csv.js';
+import { checkFileSize, parseBackupText } from '../importguard.js';
 import { GROUPS } from '../muscles.js';
 import { wakeLockSupported } from '../wakelock.js';
 import { applyAppearance, savedAppearance } from '../theme.js';
@@ -190,7 +191,7 @@ export function renderSettings(root, section) {
     storageLine,
     persistBtn,
     h('p', { class: 'fine credit' }, 'Exercise library: ',
-      h('a', { href: 'https://github.com/yuhonas/free-exercise-db', target: '_blank', rel: 'noopener' }, 'free-exercise-db'),
+      h('a', { href: 'https://github.com/yuhonas/free-exercise-db', target: '_blank', rel: 'noopener noreferrer' }, 'free-exercise-db'),
       ' by yuhonas, public domain (Unlicense). Icons: Tabler Icons (MIT). Font: Plus Jakarta Sans (SIL OFL).'));
 
   // ---- weekly sets per muscle (body map targets) ----
@@ -297,11 +298,12 @@ export function renderSettings(root, section) {
     if (!file) return;
     let parsed;
     try {
+      checkFileSize(file.size); // before reading it at all
       const text = await file.text();
       const isCSV = /\.csv$/i.test(file.name) || /^\uFEFF?date,/i.test(text);
-      parsed = store.migrateBackup(isCSV ? csvToBackup(text) : JSON.parse(text));
+      parsed = store.migrateBackup(isCSV ? csvToBackup(text) : parseBackupText(text));
     } catch (err) {
-      toast(err instanceof SyntaxError ? 'That file isn’t valid JSON. Pick a backup .json or an exported .csv.' : err.message);
+      toast(err instanceof RangeError ? 'This file is too complex to be a VANE backup. Nothing was imported.' : err.message, { timeout: 6000 });
       return;
     }
     const n = parsed.sessions.length;

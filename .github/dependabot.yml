@@ -1,0 +1,14 @@
+# Weekly update proposals. The app has no runtime dependencies; this keeps the pinned GitHub Actions current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly

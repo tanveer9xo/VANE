@@ -80,6 +80,7 @@ export function normalizeTypes(raw) {
   const seen = new Set();
   raw.forEach((t, i) => {
     const id = cleanText(t?.id, 60);
+    if (out.length >= 100 || ['__proto__', 'constructor', 'prototype'].includes(id)) return; // at most 100; no prototype keys
     const name = cleanText(t?.name, 40);
     if (!id || !name || id === BREAK || seen.has(id)) return;
     seen.add(id);

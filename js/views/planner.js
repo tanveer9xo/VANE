@@ -13,6 +13,7 @@ import { weekdayLabels, todayISO, addDays } from '../dates.js';
 import { exerciseUsage, lastSetsFor } from '../stats.js';
 import { openExercisePicker } from './picker.js';
 import { GROUPS } from '../muscles.js';
+import { MAX_SPLITS, splitDaysText } from '../splits.js';
 import {
   pickerTypes, allTypes, typeById, typeName, typeColor, typeShort, PRESETS, PALETTE_KEYS, COLOR_NAMES, nextColor, autoShort,
 } from '../types.js';
@@ -56,6 +57,97 @@ export function renderPlanner(root) {
     drawSchedule(); // saved automatically; the note above says it applies from today
   }
 
+  // ---------- saved splits ("Yours") ----------
+  const mySplits = h('div', { class: 'my-splits', id: 'my-splits' });
+  const abbr = weekdayLabels(ws).map((l) => l.abbr);
+  function drawMySplits() {
+    const list = store.state.splits;
+    const full = list.length >= MAX_SPLITS;
+    mySplits.replaceChildren(...[ // (filtered: replaceChildren would print a null)
+      list.length ? h('ul', { class: 'my-split-list', 'aria-label': 'Your saved splits' }, list.map((sp) => h('li', { class: 'my-split', dataset: { split: sp.id } },
+        h('button', { class: 'my-split-apply', 'aria-label': `Apply your split ${sp.name}`, onclick: () => applyMine(sp.id) },
+          h('span', { class: 'my-split-name' }, sp.name, h('span', { class: 'yours' }, 'Yours')),
+          h('span', { class: 'my-split-days' }, splitDaysText(sp, abbr, ws))),
+        h('button', { class: 'icon-btn', 'aria-label': `${sp.name} options`, onclick: () => splitMenu(sp.id) }, icon('more'))))) : null,
+      h('button', { class: 'btn small soft save-split', disabled: full, onclick: saveAsMine }, icon('plus'), 'Save as my split'),
+      full ? h('p', { class: 'fine' }, `You have ${MAX_SPLITS} saved splits, the most there can be. Delete one to save another.`) : null,
+    ].filter(Boolean));
+  }
+
+  /** Ask for a name (new split or rename). Resolves to the name, or null. */
+  const askName = (title, value = '', action = 'Save') => sheet({
+    title,
+    build: (close) => {
+      const input = h('input', { id: 'split-name', class: 'ob-input', type: 'text', maxlength: '40', value, placeholder: 'e.g. My 4-day', autocomplete: 'off' });
+      return h('form', { class: 'type-form', novalidate: true, onsubmit: (e) => { e.preventDefault(); close(input.value); } },
+        h('div', { class: 'ob-field' }, h('label', { for: 'split-name', class: 'ob-label' }, 'Name'), input),
+        h('button', { class: 'btn primary block', type: 'submit' }, action));
+    },
+  });
+
+  async function saveAsMine() {
+    const name = await askName('Save as my split', '', 'Save split');
+    if (name == null) return;
+    try {
+      const sp = await store.saveMySplit(name);
+      toast(`Saved “${sp.name}”: this week, its ${sp.types.length} session type${sp.types.length === 1 ? '' : 's'} and their templates`);
+    } catch (e) { toast(e.message); }
+    drawMySplits();
+  }
+
+  async function splitMenu(id) {
+    const sp = store.state.splits.find((x) => x.id === id);
+    const pick = await sheet({
+      title: sp.name,
+      build: (close) => h('div', { class: 'menu' },
+        h('button', { class: 'menu-item', onclick: () => close('apply') }, icon('check'), 'Apply from today'),
+        h('button', { class: 'menu-item', onclick: () => close('rename') }, icon('notes'), 'Rename'),
+        h('button', { class: 'menu-item', disabled: store.state.splits.length >= MAX_SPLITS, onclick: () => close('duplicate') }, icon('copy'), 'Duplicate'),
+        h('button', { class: 'menu-item', onclick: () => close('update') }, icon('refresh'), 'Save the current week into this split'),
+        h('button', { class: 'menu-item danger', onclick: () => close('delete') }, icon('trash'), 'Delete')),
+    });
+    try {
+      if (pick === 'apply') return applyMine(id);
+      if (pick === 'rename') { const n = await askName(`Rename ${sp.name}`, sp.name, 'Rename'); if (n != null) { await store.renameMySplit(id, n); toast('Renamed'); } }
+      if (pick === 'duplicate') { await store.duplicateMySplit(id); toast(`Copied “${sp.name}”`); }
+      if (pick === 'update' && await confirmDialog({ title: `Update ${sp.name}?`, message: `${sp.name} takes this week, its session types and their templates as they are now. Your current week doesn't change.`, confirmLabel: 'Update split' })) {
+        await store.updateMySplit(id); toast(`“${sp.name}” updated from this week`);
+      }
+      if (pick === 'delete' && await confirmDialog({ title: `Delete ${sp.name}?`, message: 'Only the saved split is removed. Your week, session types, templates and workouts stay as they are.', confirmLabel: 'Delete', danger: true })) {
+        await store.deleteMySplit(id); toast(`Deleted “${sp.name}”`);
+      }
+    } catch (e) { toast(e.message); }
+    drawMySplits();
+    return undefined;
+  }
+
+  /** The confirm sheet says exactly what will change before anything does. */
+  async function applyMine(id) {
+    const p = store.previewMySplit(id);
+    if (!p) return;
+    const names = p.split.types.map((t) => t.name);
+    const why = (r) => (r.why === 'deleted' ? `${r.name} was deleted since you saved this split: it's recreated as saved.`
+      : r.why === 'archived' ? `${r.name} was archived: it's restored, with its history.`
+        : `${r.was !== r.name ? `${r.was} was called ${r.name}` : `${r.name} was edited`} when you saved this split: its name, label and colour go back to how they were saved.`);
+    const ok = await sheet({
+      title: `Apply ${p.split.name}?`,
+      build: (close) => h('div', { class: 'stack apply-sheet' },
+        h('p', {}, h('strong', {}, 'Replaces your week from today. '), `Restores these session types and templates: ${names.join(', ')}.`),
+        h('p', { class: 'muted' }, splitDaysText(p.split, abbr, ws)),
+        p.restored.length ? h('ul', { class: 'apply-notes' }, p.restored.map((r) => h('li', {}, icon('info'), h('span', {}, why(r))))) : null,
+        p.hidden.length ? h('p', { class: 'fine' }, `Hidden, not deleted (show them again in Session types): ${p.hidden.join(', ')}.`) : null,
+        h('p', { class: 'fine' }, 'Logged workouts and past days don’t change.'),
+        h('div', { class: 'row-btns' },
+          h('button', { class: 'btn subtle', onclick: () => close(false) }, 'Cancel'),
+          h('button', { class: 'btn primary', id: 'apply-split', onclick: () => close(true) }, 'Apply'))),
+    });
+    if (!ok) return;
+    const r = await store.useMySplit(id);
+    selectedType = r.ids.find((x) => typeById(x)?.kind === 'lift') ?? selectedType;
+    drawAll();
+    toast(`${p.split.name} set from today`);
+  }
+
   const scheduleCard = h('section', { class: 'card', 'aria-labelledby': 'sched-h' },
     h('h2', { id: 'sched-h' }, 'Weekly schedule'),
     h('p', { class: 'muted' }, 'Shown on the calendar. A planned day opens with its template filled in. Changes apply from today; past days and logged workouts never change.'),
@@ -76,7 +168,8 @@ export function renderPlanner(root) {
           drawAll();
           toast(`${p.label} set from today`);
         },
-      }, p.label)))),
+      }, p.label))),
+      mySplits),
     h('div', { class: 'row-btns' },
       h('button', {
         class: 'btn small subtle',
@@ -355,7 +448,7 @@ export function renderPlanner(root) {
     toast(archived ? `${t.name} archived` : `${t.name} deleted`);
   }
 
-  function drawAll() { drawSchedule(); drawTypes(); drawTemplates(); }
+  function drawAll() { drawSchedule(); drawTypes(); drawTemplates(); drawMySplits(); }
 
   drawAll();
   root.append(h('div', { class: 'view plan-view' },
