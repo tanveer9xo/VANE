@@ -154,7 +154,7 @@ test('v1 → current: stored sessions get done working sets, target, rest, step 
     exercises: [{ id: 'a', name: 'Squat', sets: [{ weight: 100, reps: 5 }] }] };
   const { session, changed } = upgradeSessionRecord(v1);
   assert.equal(changed, true);
-  assert.equal(session.v, 7);
+  assert.equal(session.v, SCHEMA_VERSION);
   assert.deepEqual(session.exercises[0].sets, [{ weight: 100, reps: 5, done: true, type: 'working' }]);
   assert.equal(session.exercises[0].note, '');
   assert.equal(session.startedAt, null);

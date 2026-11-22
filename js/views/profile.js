@@ -5,8 +5,9 @@ import * as store from '../store.js';
 import { GOALS, EXPERIENCE, SPLITS, SESSION_CHOICES, SPLIT_SESSIONS } from '../profile.js';
 import { STEP_CHOICES } from '../units.js';
 import { tile, fieldset } from './onboarding.js';
+import { siteChooser } from './body.js';
 
-const GOAL_ICON = { fat: 'flame', muscle: 'barbell', strength: 'trophy', consistency: 'calendar' };
+const GOAL_ICON = { fat: 'flame', muscle: 'barbell', recomp: 'arrows-exchange', strength: 'trophy', consistency: 'calendar' };
 const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
 export function renderProfile(root) {
@@ -66,7 +67,11 @@ export function renderProfile(root) {
           h('a', { class: 'link', href: '#/plan' }, 'Open the Planner'))),
       h('section', { class: 'card', 'aria-labelledby': 'pf-body-h' },
         h('h2', { id: 'pf-body-h' }, 'Body'),
-        h('p', { class: 'fine' }, 'Bodyweight and waist are entries in your ', h('a', { class: 'link', href: '#/progress/~body' }, 'Body log'), '.')),
+        h('p', { class: 'fine' }, 'Bodyweight and measurements are entries in your ', h('a', { class: 'link', href: '#/progress/~body' }, 'Body log'), '.')),
+      h('section', { class: 'card', id: 'pf-measures', 'aria-labelledby': 'pf-m-h' },
+        h('h2', { id: 'pf-m-h' }, 'Measurements to track'),
+        h('p', { class: 'fine' }, `Shown on the Body tab, in ${p.units === 'lb' ? 'inches' : 'cm'} (your units). Stored in cm either way.`),
+        siteChooser(() => { status.textContent = 'Saved.'; })),
     );
     status.textContent = msg;
     if (focusSel) view.querySelector(focusSel)?.focus();

@@ -220,7 +220,7 @@ Run through this on a real phone after deploying, since browsers differ here.
 
 The repository root *is* the site. All paths are relative, so it works at a domain root or a sub-path such as `username.github.io/workout-tracker/`.
 
-**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.9.3. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
+**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.11.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
 
 ### GitHub Pages
 The repo `VANE` is served at `https://<you>.github.io/VANE/`. Every URL in the app is relative (manifest `start_url`/`scope`/`id` are `./`, the service worker registers `./sw.js` and precaches `./…`), so the sub-path just works. `npm run test:subpath` proves it: it serves the built site under `/VANE/` and checks the service worker scope, the precache, the manifest, Chrome's install criteria and offline use.
@@ -285,14 +285,14 @@ tests/browser/e2e.mjs Browser test over the Chrome DevTools protocol (no depende
 
 Routes: `#/cal/2026-11`, `#/day/2026-11-20`, `#/plan`, `#/timer`, `#/progress[/<exercise>]`, `#/progress/~records`, `#/progress/~map`, `#/progress/~body[/<date>]`, `#/progress/~consistency`, `#/settings[/backup|/targets]`. The 1.3 route `#/body` redirects to Progress → Body.
 
-### Data model (schema v7, IndexedDB v2)
+### Data model (schema v9, IndexedDB v2)
 
 | store       | key    | value |
 |-------------|--------|-------|
-| `sessions`  | `date` | `{ v: 7, date, type, exercises, cardioMinutes, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. |
+| `sessions`  | `date` | `{ v: 9, date, type, exercises, cardioMinutes, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. |
 | `exercises` | `key`  | the exercise catalog: `{ key, name, libId, primary: [group], secondary: [group], equipment, custom, favourite, needsMuscle }` |
-| `body`      | `date` | `{ date, weight (kg), waist (cm) \| null, updatedAt }` |
-| `meta`      | `key`  | `settings`, `schedule`, `templates`, `skipReasons`, `profile`, `sessionTypes`, `lastExportAt` (and v4's `muscles`, kept but no longer used) |
+| `body`      | `date` | `{ date, weight (kg) \| null, waist (cm) \| null, neck, shoulders, chest, armL, armR, forearm, hips, thighL, thighR, calf (cm, only those recorded), bodyFat (%, optional), updatedAt }`. Any subset; nothing is required (v8). |
+| `meta`      | `key`  | `settings`, `schedule`, `templates`, `skipReasons`, `profile`, `sessionTypes`, `nutrition`, `intake`, `lastExportAt` (and v4's `muscles`, kept but no longer used) |
 
 - **Session exercise:** `{ id, name, target: { sets, repsMin, repsMax } | null, weightStep, restSeconds, hintDismissed, note, sets }`.
 - **Set:** `{ weight, reps, done, type: 'warmup' | 'working' | 'failure' }`.
@@ -310,7 +310,7 @@ Routes: `#/cal/2026-11`, `#/day/2026-11-20`, `#/plan`, `#/timer`, `#/progress[/<
 - **`profile`** (v6): `{ name, units: 'kg' | 'lb', goal, experience, split, sessionsPerWeek, heightCm, onboarding: 'pending' | 'done' | 'existing', setupCardDismissed, updatedAt }`. It holds no sex, birth date or medical information.
 - **Units:** weights are always stored in kg and lengths in cm. A value typed in lb is stored at 4 decimal places (135 lb → 61.2349 kg), so it reads back exactly. The profile's unit only changes what's shown and typed (`js/units.js`).
 
-Backup file: `{ app, schemaVersion: 7, appVersion, exportedAt, units: 'kg' (stored units), profile, sessionTypes, settings, schedule, templates, skipReasons, body, exercises, sessions }`.
+Backup file: `{ app, schemaVersion: 9, appVersion, exportedAt, units: 'kg' (stored units), profile, sessionTypes, nutrition, intake, settings, schedule, templates, skipReasons, body, exercises, sessions }`.
 
 ### Migrations
 
@@ -324,10 +324,38 @@ Backup file: `{ app, schemaVersion: 7, appVersion, exportedAt, units: 'kg' (stor
     - **No match:** names nothing recognises get the one-time muscle question.
     - It's idempotent and never renames or drops history.
   - **v5 → v6** leaves sessions as they are, apart from the version number. On the first v6 start, stored data without a profile gets one: `onboarding: 'existing'` if any workout is logged (no first-run flow, just a one-time "Set up your profile" card), otherwise `'pending'` (the flow). Template steps that only repeated the global step become `null`, so they follow the setting that your experience answer now sets. The numbers are the same as before, and steps you chose yourself stay.
+  - **v7 → v8:** Body log entries keep their weight and waist exactly; the other measurement sites are new and optional, and weight stops being required.
+  - **v8 → v9:** nutrition starts off with no answers, and the intake log starts empty. Nothing else changes.
   - **v6 → v7** leaves sessions as they are, apart from the version number. On the first v7 start, the built-in types become the stored `sessionTypes` list. Every session, plan day and template already holds the right id.
 - **Backups:** unversioned and v1 to v6 files (v6 → v7 adds `sessionTypes: null`, meaning the built-ins). A v7 file's own custom types count as known while its sessions, plan and templates are read, so nothing referring to them is dropped. "Replace all" takes the file's types; "Merge" adds the ones you don't have and never changes yours. CSV carries type **names**: they map back to the same ids, and an unknown name becomes a new type.
 - **Older backups:** unversioned and v1 to v5 files are upgraded step by step on import (v5 → v6 adds `profile: null` and the same template-step rule; "Replace all" takes a file's profile answers, while this phone keeps its own first-run state) (v4's custom names and muscle tags become catalog records the same way). v3 → v4 also adds `muscles: {}` and `skipReasons: {}`; a v4 file made without them still imports. Merge keeps your own muscle tags and lets the file's skip reasons win on a clash (they're per date, like sessions); Replace takes the file's.
 - **To change the schema:** bump `SCHEMA_VERSION`, add `SESSION_MIGRATIONS[n]` and `BACKUP_MIGRATIONS[n]`. If stores change, bump `DB_VERSION` in `js/db.js`.
+
+### Body measurements (1.10)
+- **Sites:** neck, shoulders, chest, upper arm (left and right), forearm, waist, hips, thigh (left and right), calf, plus body fat % ("your own estimate").
+- **What's tracked:** choose sites in Settings → Profile or on the Body tab. The defaults are chest, waist, hips, upper arm and thigh.
+- **Logging:** a Body log entry can hold any subset. Lengths show in cm or inches (profile units) and are stored in cm.
+- **Per site:** latest value, the change since the first and since the previous entry, and a trend chart titled with the site's name.
+- **Waist-to-height:** shown only when a height is stored (latest waist ÷ height), as a plain number with a "How it's counted" note. Height isn't asked in onboarding or Profile; it comes from the Nutrition setup or a 1.8 profile.
+- **Weight:** the bodyweight field starts empty with "Last: …" beside it, so logging only a measurement never logs an old weight again.
+- **CSV:** `bodyweight` rows (kg) and `measurement` rows (`site`, `value` in cm or %).
+
+### Updates (1.10)
+- **The banner:** a new version installs in the background, then a banner at the top of the page says "Update ready. Tap to refresh". It sits in the page flow, never over content, and it isn't a toast.
+- **Your choices:** tap it to update, or dismiss it until Settings → About → Check for updates brings it back. About shows the version.
+- **Data is never touched:** updating saves any edit in progress first, then replaces only the app's own file cache (`workout-tracker-*`). IndexedDB and localStorage stay as they are.
+- **Tested:** `npm run test:update` bumps the version on a test server and checks the banner, Dismiss, the reload and that every record survives.
+
+### Recomp and nutrition (1.11)
+- **Recomp goal:** "Recomp (lose fat, build muscle)" is a goal in onboarding and Profile. Its hints and weekly review judge waist, strength and the weight trend together; the review leads with waist.
+- **Nutrition is opt-in:** Settings → Nutrition is off by default and also offered as a card on the Body tab. Every answer is optional and stays on the phone: sex (Male / Female / Prefer not to say), birth year, height, current weight (pre-filled from the Body log) and activity.
+- **Adults only:** never shown or switched on under 18. With only a birth year, it assumes the youngest possible age.
+- **Calculation** (`js/nutrition.js`):
+  - Mifflin-St Jeor BMR (+5 male, −161 female, −78 "Prefer not to say", shown with a range spanning both) × activity factor (1.2, 1.375, 1.55 or 1.725).
+  - Goal adjustment: Lose fat −10 to −25 % (−20 % default), Build muscle +5 to +10 %, Recomp 0 to −5 %, otherwise maintenance.
+  - Limits: a loss is capped at about 1 % of bodyweight a week, with floors of 1,500 / 1,200 / 1,350 kcal.
+  - Protein: 1.6–2.2 g/kg (1.8 by default); Lose fat and Recomp 2.0–2.2.
+- **What you see:** an estimate with its ranges, a "How it's counted" sheet, a doctor note, a switch to hide all numbers, a prompt when Body log weight moves more than 2 kg, and an optional manual daily log (calories and protein totals) with progress bars.
 
 ### Exercise display names (1.9.1)
 

@@ -37,12 +37,17 @@ export function weeklyReview({ sessions, getSession, schedule, body, start, toda
       info.lines.forEach((line) => prLines.push(`${ex ? exName(ex.name) : ''}: ${line}`));
     }
   }
-  const lastWeighIn = body.filter((e) => inRange(e, start, last)).map((e) => e.date).sort().at(-1);
+  const lastWeighIn = body.filter((e) => e.weight != null && inRange(e, start, last)).map((e) => e.date).sort().at(-1);
   const after = lastWeighIn ? movingAverage(body, lastWeighIn) : null;
   const before = movingAverage(body, addDays(start, -1));
+  // Waist: the latest measurement this week against the latest before it (measurements are occasional).
+  const waists = body.filter((e) => e.waist != null).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const waistNow = waists.filter((e) => inRange(e, start, last)).at(-1);
+  const waistBefore = waists.filter((e) => e.date < start).at(-1);
   return {
     start, end, done, planned, volume, prevVolume, prs, prLines,
     bodyChange: after != null && before != null ? after - before : null,
+    waistChange: waistNow && waistBefore ? Math.round((waistNow.waist - waistBefore.waist) * 10) / 10 : null,
   };
 }
 

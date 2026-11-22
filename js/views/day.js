@@ -225,7 +225,7 @@ export function renderDay(root, date) {
     if (!e && date > today) return null;
     return h('a', { class: 'card row-link', href: `#/progress/~body/${date}` },
       icon('scale'),
-      e ? h('span', {}, 'Weigh-in ', h('strong', { class: 'num' }, fmtWU(e.weight))) : h('span', {}, 'Log weigh-in'),
+      e ? (e.weight != null ? h('span', {}, 'Weigh-in ', h('strong', { class: 'num' }, fmtWU(e.weight))) : h('span', {}, 'Body log: measurements')) : h('span', {}, 'Log weigh-in'),
       icon('chevR', 'end'));
   }
 

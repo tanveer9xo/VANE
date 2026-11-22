@@ -159,6 +159,7 @@ await send('Page.navigate', { url: BASE });
 await sleep(2200);
 const TODAY = await ev(`import('./js/dates.js').then(m => m.todayISO())`);
 check(TODAY === '2026-11-20', `clock pinned to Fri 20 Nov (${TODAY})`);
+const SCHEMA = await ev(`import('./js/model.js').then((m) => m.SCHEMA_VERSION)`);
 await ev(`window.__vib = []; navigator.vibrate = (p) => { window.__vib.push(p); return true; }; true`);
 
 // ---------------- first run: onboarding, the skip-everything path ----------------
@@ -238,9 +239,9 @@ await sleep(600);
 await click('dialog[open] button[value=replace]');
 await sleep(600);
 const migrated = await sessionOf('2026-11-13');
-check(migrated?.v === 7 && migrated.exercises[0].note === '' && migrated.finishedAt === null, 'v3 backup imported and migrated to v7');
+check(migrated?.v === SCHEMA && migrated.exercises[0].note === '' && migrated.finishedAt === null, `v3 backup imported and migrated to v${SCHEMA}`);
 check(!(await exists('#timer-sound')) && !(await ev(`[...document.querySelectorAll('button')].some(b => /Test the timer/.test(b.textContent))`)), 'Settings has no timer sound toggle or timer test');
-check(await ev(`[...document.querySelectorAll('.settings-view h2')].map(h => h.textContent).join('|')`) === 'Profile|Appearance|Stats|Backup|Preferences|Weekly sets per muscle|About|Erase', 'Settings sections incl. Profile and weekly muscle targets and About');
+check(await ev(`[...document.querySelectorAll('.settings-view h2')].map(h => h.textContent).join('|')`) === 'Profile|Nutrition|Appearance|Stats|Backup|Preferences|Weekly sets per muscle|About|Erase', 'Settings sections incl. Profile and weekly muscle targets and About');
 check(await ev(`[...document.querySelectorAll('#backup button')].some(b => b.textContent.includes('CSV'))`), 'CSV export next to the JSON backup');
 
 // ---------------- calendar: plates ----------------
@@ -500,13 +501,70 @@ check(await ev(`[...document.querySelectorAll('.rec-table td.num')].some(td => /
 check(await ev(`[...document.querySelectorAll('.rec .ex-tile')].every(t => t.classList.contains('t-none') && getComputedStyle(t).backgroundColor === getComputedStyle(document.querySelector('.rec .ex-tile')).backgroundColor)`), 'records: every exercise has the same icon style');
 await shot('05-records');
 await go('#/progress/~body');
-check((await ev(`document.getElementById('body-date').value`)) === TODAY && (await ev(`document.getElementById('body-weight').value`)) === '80.6', 'body form: today, prefilled with last weight');
+check((await ev(`document.getElementById('body-date').value`)) === TODAY && (await ev(`document.getElementById('body-weight').value`)) === '' && (await text('#body-last')) === 'Last: 80.6 kg', 'body form: today, weight empty with “Last: 80.6 kg” beside it (a measurement alone never re-logs an old weight)');
 check(J(await ev(`[...document.querySelectorAll('.body-stats dt')].map(d => d.textContent)`)) === J(['Latest', 'Change, last 7 days', 'Since first entry', 'Weigh-ins']), `body cards: under 30 days of data the third card is “Since first entry” (${J(await ev(`[...document.querySelectorAll('.body-stats dt')].map(d => d.textContent)`))})`);
 await typeInto('#body-weight', '80.2');
-await clickText('.body-form button', 'Save weigh-in');
+await clickText('.body-form button', 'Save entry');
 await sleep(500);
 check((await store('m.state.body.get ? [...m.state.body.values()].length : 0')) === 3, 'weigh-in saved');
 check(await ev(`document.querySelector('.body-form').getBoundingClientRect().top >= 0`), 'body form not clipped under a sticky header');
+
+// ---------------- body measurements (1.10) ----------------
+const bodyOf = (d) => store(`m.state.body.get(${J(d)}) ?? null`);
+check(J(await ev(`[...document.querySelectorAll('.measure-fields label')].map(l => l.textContent)`)) === J(['Chest', 'Upper arm, left', 'Upper arm, right', 'Waist', 'Hips', 'Thigh, left', 'Thigh, right']), 'default sites: chest, upper arms, waist, hips, thighs');
+// A measurement-only entry for a new day: no weight needed.
+await setValue('#body-date', '2026-11-15');
+await typeInto('#body-m-chest', '100');
+await typeInto('#body-waist', '86');
+await clickText('.body-form button', 'Save entry');
+await sleep(500);
+check(J(await bodyOf('2026-11-15')).includes('"weight":null') && (await bodyOf('2026-11-15')).chest === 100 && (await bodyOf('2026-11-15')).waist === 86, 'a measurement-only entry saves (no weight required)');
+// Adding a measurement to a day that has a weigh-in keeps the weight.
+await setValue('#body-date', '2026-11-18');
+check((await ev(`document.getElementById('body-weight').value`)) === '80.6', 'an existing entry loads for editing');
+await typeInto('#body-m-chest', '101.5');
+await clickText('.body-form button', 'Update entry');
+await sleep(500);
+check((await bodyOf('2026-11-18')).weight === 80.6 && (await bodyOf('2026-11-18')).chest === 101.5, 'adding a measurement keeps that day’s weight');
+// Out of range: field marked, nothing saved.
+await setValue('#body-date', TODAY);
+await typeInto('#body-m-chest', '500');
+await clickText('.body-form button', 'Update entry');
+await sleep(300);
+check((await ev(`document.getElementById('body-m-chest').getAttribute('aria-invalid')`)) === 'true' && (await bodyOf(TODAY)).chest === undefined, 'an out-of-range value is flagged and not saved');
+await typeInto('#body-m-chest', '102');
+await typeInto('#body-m-armL', '38');
+await clickText('.body-form button', 'Update entry');
+await sleep(600);
+check((await bodyOf(TODAY)).weight === 80.2 && (await bodyOf(TODAY)).chest === 102 && (await bodyOf(TODAY)).armL === 38, 'today: weight, chest and left arm in one entry');
+check((await text('.measure-row[data-site="chest"] .measure-val')) === '102 cm' && (await text('.measure-row[data-site="chest"] .measure-sub')) === '+2 cm since first · +0.5 cm since last', `chest: latest, since first, since last (“${await text('.measure-row[data-site="chest"]')}”)`);
+check(/No entries yet/.test(await text('.measure-row[data-site="hips"]')), 'a tracked site with no entries says so');
+for (let i = 0; i < 40 && (await ev(`[...document.querySelectorAll('#toasts .toast')].some(t => !t.hidden && t.getClientRects().length)`)); i++) await sleep(200);
+await click('.measure-row[data-site="chest"]');
+await sleep(500);
+check((await text('dialog[open] .sheet-head h2')) === 'Chest' && (await ev(`document.querySelector('dialog[open] .chart-svg')?.getAttribute('aria-label')`))?.startsWith('Chest trend'), 'chest trend opens in a sheet titled with the site name');
+await shot('46-body-chest-sheet');
+await ev(`document.querySelector('dialog[open] .sheet-head .btn').click(); true`);
+await sleep(200);
+// Choose sites from the Body tab.
+await click('.body-form .choose-sites');
+await sleep(300);
+await ev(`[...document.querySelectorAll('dialog[open] .check-row input')].filter(i => ['calf', 'bodyFat'].includes(i.value)).forEach(i => i.click()); true`);
+await sleep(300);
+await ev(`document.querySelector('dialog[open] .sheet-head .btn').click(); true`);
+await sleep(500);
+check((await exists('#body-m-calf')) && (await exists('#body-fat')) && /your own estimate/.test(await text('label[for="body-fat"]')), 'calf and body fat % (“your own estimate”) added to the form');
+check(J(await store('m.state.settings.measureSites')) === J(['chest', 'upperArm', 'waist', 'hips', 'thigh', 'calf', 'bodyFat']), 'tracking choice saved');
+// Waist-to-height, only with a height.
+check(!(await exists('#whtr')), 'no waist-to-height without a height');
+await ev(`import('./js/store.js').then(async (m) => { await m.saveProfile({ heightCm: 178 }); return true; })`);
+await go('#/progress/~body/x');
+await go('#/progress/~body');
+check((await text('#whtr')) === '0.48' && (await exists('.whtr details summary')) && !/risk|healthy|unhealthy|obes|disease|should/i.test(await text('.whtr')), `waist-to-height shows as a plain number with “How it’s counted” (${await text('#whtr')})`);
+await ev(`document.getElementById('measures').scrollIntoView({ block: 'start' }); true`);
+await sleep(150);
+await shot('46-body-measurements');
+await ev(`import('./js/store.js').then(async (m) => { await m.saveProfile({ heightCm: null }); return true; })`);
 
 
 // ---------------- Round 5: exercise library, per-exercise progress, body map ----------------
@@ -917,6 +975,10 @@ for (const width of [320, 412]) {
   await shot(`27-about-${width}`);
   await go('#/progress/~map');
   await shot(`24-bodymap-${width}`);
+  await go('#/progress/~body');
+  await ev(`document.getElementById('measures')?.scrollIntoView({ block: 'start' }); true`);
+  await sleep(150);
+  await shot(`46-body-measurements-${width}`);
   await go('#/day/2026-11-27');
   await click('.add-row');
   await sleep(400);
@@ -973,6 +1035,7 @@ check(await ev(`[...document.querySelectorAll('.set-row input[inputmode=decimal]
 check(J((await sessionOf('2026-11-16')).exercises) === J(chestBefore.exercises), 'switching units rewrites no history (still stored in kg)');
 await go('#/progress/~body');
 check(await ev(`/ lb$/.test(document.querySelector('.body-stats .stat-v').textContent) && document.querySelector('#body-weight').placeholder === 'lb'`), 'lb on the Body log');
+check((await text('.measure-row[data-site="chest"] .measure-val')) === '40.2 in' && (await ev(`document.getElementById('body-m-chest').placeholder`)) === 'in', `measurements in inches with lb (“${await text('.measure-row[data-site="chest"] .measure-val')}”), stored in cm`);
 await go('#/');
 check(await ev(`/ lb/.test(document.querySelector('.weigh-btn').textContent) && /lb/.test(document.querySelector('.review').textContent)`), 'lb on the Calendar weigh-in and weekly review');
 await go('#/settings');
@@ -1001,6 +1064,102 @@ check((await ev(`document.querySelector('#cons-min')?.value`)) === '5', 'good-we
 await setValue('#cons-min', '3');
 await sleep(300);
 check((await store('m.state.settings.weeklyMin')) === 3, 'edited on Consistency');
+
+// ---------------- Recomp goal and nutrition targets (1.11) ----------------
+await go('#/settings/profile');
+check(await exists('input[name=goal][value=recomp]') && /Recomp \(lose fat, build muscle\)/.test(await text('main')), 'Profile offers the Recomp goal');
+await pick('goal', 'recomp');
+await sleep(300);
+await go('#/');
+check(/^Recomp: /.test(await text('.review-headline')) && /weight alone/.test(await text('.review-headline')) && (await ev(`document.querySelector('.review > div dt').textContent`)) === 'Waist', `Recomp review leads with waist and reads waist, strength and weight together (“${await text('.review-headline')}”)`);
+await go('#/day/2026-11-27');
+const recompLines = await ev(`import('./js/profile.js').then(m => Object.values(m.GOAL_HINT.recomp))`);
+check(await ev(`[...document.querySelectorAll('.hint-text')].some(t => ${J(recompLines)}.some(l => t.textContent.includes(l)))`), 'Recomp hint wording');
+await go('#/settings');
+check((await text('#nutrition-summary')) === 'Off', 'Settings → Nutrition: off by default');
+await go('#/progress/~body');
+check(/Set up/.test(await text('#nutrition-card')) && /Off until you switch it on/.test(await text('#nutrition-card')), 'Body tab offers nutrition as a card');
+await go('#/settings/nutrition');
+check(!(await exists('#nut-targets')) && (await exists('#nut-on')), 'nothing shows until you switch it on');
+await click('#nut-on');
+await sleep(400);
+const lastKg = await store('m.bodyEntries().filter(e => e.weight != null).at(-1).weight');
+check((await ev(`document.getElementById('nut-weight').value`)) === String(lastKg), `current weight prefilled from the Body log (${lastKg} kg)`);
+check(/Add your birth year, height and activity level/.test(await text('#nut-targets')), `missing answers listed (“${await text('#nut-targets')}”)`);
+await pick('nut-sex', 'male');
+await typeInto('#nut-year', '1996');
+await ev(`document.getElementById('nut-year').dispatchEvent(new Event('change', { bubbles: true })); true`);
+await sleep(300);
+await typeInto('#nut-height', '178');
+await ev(`document.getElementById('nut-height').dispatchEvent(new Event('change', { bubbles: true })); true`);
+await sleep(300);
+await pick('nut-act', 'moderate');
+await sleep(300);
+const expect = await ev(`import('./js/nutrition.js').then(m => m.targets({ ...${J(await store('m.state.nutrition'))}, sex: 'male', birthYear: 1996, activity: 'moderate' }, { goal: 'recomp', heightCm: 178, thisYear: 2026 }))`);
+check((await text('#nut-kcal')) === `about ${expect.calories.target.toLocaleString('en-US')}` && (await text('#nut-protein')) === `about ${expect.protein.target} g`, `Recomp estimate shown (${await text('#nut-kcal')} kcal, ${await text('#nut-protein')})`);
+check(/estimate\. Range/.test(await text('#nut-targets')) && /check with a doctor/.test(await text('#nut-targets')), 'ranges, “estimate” and the doctor note');
+check(!/fail|bad|cheat|guilt|too much|should/i.test(await text('main')), 'plain, non-shaming copy');
+await shot('47-nutrition');
+await click('#nut-how');
+await sleep(400);
+check((await text('dialog[open] .sheet-head h2')) === 'How it’s counted' && /Mifflin-St Jeor/.test(await text('dialog[open]')), '“How it’s counted” sheet');
+await shot('48-nutrition-how');
+await ev(`document.querySelector('dialog[open] .sheet-head .btn').click(); true`);
+await sleep(200);
+// Intake log with progress bars.
+await typeInto('#intake-kcal', '1800');
+await ev(`document.getElementById('intake-kcal').dispatchEvent(new Event('change', { bubbles: true })); true`);
+await sleep(300);
+await typeInto('#intake-protein', '120');
+await ev(`document.getElementById('intake-protein').dispatchEvent(new Event('change', { bubbles: true })); true`);
+await sleep(300);
+check(J(await store(`m.state.intake[${J(TODAY)}]`)) === J({ kcal: 1800, protein: 120 }) && (await ev(`document.querySelector('#nut-log .bar-track').getAttribute('aria-valuenow')`)) === String(Math.round((1800 / expect.calories.target) * 100)), 'manual daily totals, with progress bars');
+// Hide all numbers.
+await click('#nut-hide');
+await sleep(300);
+check(!(await exists('#nut-kcal')) && (await exists('#nut-hidden')) && !(await ev(`[...document.querySelectorAll('.intake-bar-head')].some(h => /\\d/.test(h.textContent))`)), 'Hide all numbers: no numbers, bars only');
+await go('#/progress/~body');
+check((await exists('#nutrition-card .bar-track')) && !/\d/.test(await text('#nutrition-card .intake-bar-head')), 'Body tab card follows “hide numbers”');
+await go('#/settings/nutrition');
+await click('#nut-hide');
+await sleep(300);
+// Lose fat: the speed choice appears and the estimate drops.
+await ev(`import('./js/store.js').then(async (m) => { await m.saveProfile({ goal: 'fat' }); return true; })`);
+await go('#/settings');
+await go('#/settings/nutrition');
+check(await exists('input[name=nut-loss][value="20"]:checked'), 'Lose fat: −20% by default, −10 to −25% to choose');
+// Bodyweight moves more than 2 kg → prompt to update.
+await ev(`import('./js/store.js').then(async (m) => { await m.saveBodyEntry({ ...(m.state.body.get(${J(TODAY)}) ?? {}), date: ${J(TODAY)}, weight: ${lastKg + 2.8} }); return true; })`);
+await go('#/settings');
+await go('#/settings/nutrition');
+check(/2\.8 kg more than/.test(await text('.nut-drift')), `weight change over 2 kg: prompt to update (“${await text('.nut-drift')}”)`);
+await clickText('.nut-drift button', 'Use');
+await sleep(400);
+check(Math.abs((await store('m.state.nutrition.weightKg')) - (lastKg + 2.8)) < 0.01 && !(await exists('.nut-drift')), 'one tap updates the weight the estimate uses');
+const exp2 = await ev(`import('./js/store.js').then(m => JSON.parse(JSON.stringify(m.exportPayload())))`);
+check(exp2.nutrition?.enabled === true && exp2.nutrition.birthYear === 1996 && exp2.intake[TODAY]?.kcal === 1800, 'JSON export includes nutrition settings and the intake log');
+const re2 = await ev(`import('./js/model.js').then(m => m.migrateBackup(${J(exp2)}))`);
+check(re2.nutrition.activity === 'moderate' && re2.intake[TODAY].protein === 120, 'they survive export → import');
+for (const width of [320, 412]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
+  await go('#/settings/nutrition');
+  const over = await ev(`(()=>{const w=innerWidth; return [...document.querySelectorAll('main *')].filter(e => { const r=e.getBoundingClientRect(); return r.width && (r.right > w + 1 || r.left < -1); }).slice(0,3).map(e => e.className || e.tagName)})()`);
+  check((await ev(`document.documentElement.scrollWidth <= innerWidth`)) && over.length === 0, `${width} px Nutrition: nothing spills sideways${over.length ? ` (${J(over)})` : ''}`);
+  await shot(`47-nutrition-${width}`);
+}
+await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
+// Under 18: never shown or enabled.
+await go('#/settings/nutrition');
+await typeInto('#nut-year', '2010');
+await ev(`document.getElementById('nut-year').dispatchEvent(new Event('change', { bubbles: true })); true`);
+await sleep(400);
+check((await exists('#nut-minor')) && !(await exists('#nut-targets')) && (await store('m.state.nutrition.enabled')) === false, 'under 18: targets switched off and not shown');
+await go('#/progress/~body');
+check(!(await exists('#nutrition-card')), 'under 18: no nutrition card on the Body tab');
+await go('#/settings');
+check((await text('#nutrition-summary')) === 'For adults (18+)', 'under 18: Settings says it’s for adults');
+await shot('47-nutrition-minor');
+await ev(`import('./js/store.js').then(async (m) => { await m.saveNutrition({ birthYear: 1996, enabled: true }); await m.saveProfile({ goal: 'strength' }); return true; })`);
 
 // ---------------- session types: a bro-split week of five coloured types ----------------
 await go('#/plan');
@@ -1257,7 +1416,7 @@ await ev(`import('./js/store.js').then(async (m) => { await m.saveProfile({ heig
 await go('#/settings');
 check((await text('#profile .row-text strong')) === 'Sam' && (await text('#profile .row-text small')) === 'Goal: Get stronger', `Settings → Profile card: name and goal (“${await text('#profile .row-text')}”)`);
 const exported = await ev(`import('./js/store.js').then(m => m.exportPayload())`);
-check(exported.profile?.name === 'Sam' && exported.profile.units === 'lb' && exported.units === 'kg' && exported.schemaVersion === 7, 'JSON export includes the profile (data stays in kg)');
+check(exported.profile?.name === 'Sam' && exported.profile.units === 'lb' && exported.units === 'kg' && exported.schemaVersion === SCHEMA, 'JSON export includes the profile (data stays in kg)');
 const reimported = await ev(`import('./js/model.js').then(m => m.migrateBackup(JSON.parse(${J(J(exported))})).profile)`);
 check(reimported?.goal === 'strength' && reimported.split === 'ul' && reimported.heightCm === 180 && exported.profile.heightCm === 180, 'the profile (and a stored height) survives export → import');
 

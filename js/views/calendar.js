@@ -13,7 +13,7 @@ import {
 } from '../dates.js';
 import { install, isStandalone, isIOS, promptInstall } from '../pwa.js';
 import { openMusclePrompt } from './bodymap.js';
-import { fmtWU, shownVolume, wUnit } from '../units.js';
+import { fmtWU, fmtLU, shownVolume, wUnit } from '../units.js';
 import { reviewFocus } from '../profile.js';
 
 const STATE_WORDS = {
@@ -78,12 +78,12 @@ export function renderCalendar(root, monthArg) {
     return h('a', {
       class: cls,
       href: `#/day/${iso}`,
-      'aria-label': `${formatLong(iso)}${iso === today ? ' (today)' : ''}${describe(st)}${weighed ? `, weigh-in ${fmtWU(weighed.weight)}` : ''}`,
+      'aria-label': `${formatLong(iso)}${iso === today ? ' (today)' : ''}${describe(st)}${weighed ? (weighed.weight != null ? `, weigh-in ${fmtWU(weighed.weight)}` : ', measurements logged') : ''}`,
       'aria-current': iso === today ? 'date' : null,
     },
     h('span', { class: 'cal-num num' }, day),
     marker(st), // plate + short name: colour is never the only cue
-    weighed ? h('span', { class: 'cal-body', title: 'Weigh-in' }) : null);
+    weighed ? h('span', { class: 'cal-body', title: 'Body log entry' }) : null);
   });
 
   const grid = h('div', { class: 'cal-grid' }, cells);
@@ -158,7 +158,7 @@ function todayActions(today, schedule) {
   else if (st.state === 'break') main = go('soft', 'moon', 'Break day today');
   else if (st.state === 'rest') main = go('soft', 'check', 'Rest day logged');
   else main = go('accent', 'plus', 'Log today’s workout');
-  const weighed = store.state.body.get(today);
+  const weighed = store.state.body.get(today)?.weight != null ? store.state.body.get(today) : null; // the button shows a weight
   return h('div', { class: 'today-actions' }, main,
     h('a', { class: `btn soft weigh-btn${weighed ? ' has-value' : ''}`, href: `#/progress/~body/${today}`, 'aria-label': weighed ? `Weigh-in ${fmtWU(weighed.weight)}. Edit` : 'Log weigh-in', title: 'Log weigh-in' },
       icon('scale'), weighed ? h('span', { class: 'num' }, fmtWU(weighed.weight)) : null));
@@ -204,12 +204,14 @@ function reviewCard(today, weekStartsOn) {
     const delta = r.prevVolume ? Math.round(((r.volume - r.prevVolume) / r.prevVolume) * 100) : null;
     const bw = r.bodyChange;
     // The goal picks which figure leads and adds a one-line summary (profile.js reviewFocus).
-    const focus = reviewFocus(store.state.profile.goal, r, (kg) => fmtWU(kg, 1));
+    const focus = reviewFocus(store.state.profile.goal, r, (kg) => fmtWU(kg, 1), (cm) => fmtLU(cm, 1));
     const items = {
       sessions: h('div', {}, h('dt', {}, 'Sessions'), h('dd', { class: 'num' }, `${r.done} of ${r.planned}`), h('dd', { class: 'sub' }, 'done of planned')),
       volume: h('div', {}, h('dt', {}, 'Volume'), h('dd', { class: 'num' }, `${fmtInt(shownVolume(r.volume))} ${wUnit()}`),
         h('dd', { class: 'sub' }, delta == null ? 'Nothing the week before' : `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta)}% vs the week before`)),
       prs: h('div', {}, h('dt', {}, 'PRs'), h('dd', { class: 'num' }, String(r.prs)), h('dd', { class: 'sub' }, r.prs ? 'new records' : 'none yet')),
+      waist: h('div', {}, h('dt', {}, 'Waist'), h('dd', { class: 'num' }, r.waistChange == null ? '–' : `${r.waistChange > 0 ? '+' : r.waistChange < 0 ? '−' : '±'}${fmtLU(Math.abs(r.waistChange), 1)}`),
+        h('dd', { class: 'sub' }, r.waistChange == null ? 'Measure this week and last' : 'vs your last measurement')),
       bodyweight: h('div', {}, h('dt', {}, 'Bodyweight'), h('dd', { class: 'num' }, bw == null ? '–' : `${bw > 0 ? '+' : bw < 0 ? '−' : '±'}${fmtWU(Math.abs(bw), 1)}`),
         h('dd', { class: 'sub' }, bw == null ? 'Weigh in to see a trend' : '7-day average')),
     };

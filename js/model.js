@@ -4,9 +4,11 @@ import { GROUPS } from './muscles.js';
 import { normalizeCatalogRecord } from './library.js';
 import { normalizeProfile, templatesFollowDefaultStep } from './profile.js';
 import { BREAK, BUILTIN_IDS, isTypeId, templateTypeIds, normalizeTypes, withKnownTypes } from './types.js';
+import { cleanMeasurements, normalizeTracked, DEFAULT_TRACKED } from './measure.js';
+import { normalizeNutrition, normalizeIntake } from './nutrition.js';
 
-export const APP_VERSION = '1.9.3'; // keep in sync with VERSION in sw.js (a test checks this)
-export const SCHEMA_VERSION = 7;
+export const APP_VERSION = '1.11.0'; // keep in sync with VERSION in sw.js (a test checks this)
+export const SCHEMA_VERSION = 9;
 
 // Session types are data since v7 (js/types.js): ids are stable, names and colours are editable.
 // BREAK is a deliberate rest day: valid in the schedule and as a logged day, but not a type.
@@ -44,6 +46,7 @@ export const DEFAULT_SETTINGS = {
   appearance: 'system', // 'system' | 'light' | 'dark' (also kept in localStorage to apply before first paint)
   muscleTarget: 10, // weekly sets per muscle group (body map), unless muscleTargets has its own number
   muscleTargets: {}, // { 'Chest': 12, … } per-group weekly targets
+  measureSites: [...DEFAULT_TRACKED], // body measurement sites shown on the Body tab (measure.js GROUPS)
 };
 
 // Optional one-tap reasons for a skipped planned day (on-device only, never required).
@@ -452,20 +455,27 @@ export const SESSION_MIGRATIONS = {
   5: (s) => ({ ...s, v: 6 }),
   // v6 → v7: session types become data (types.js). Built-in ids are the old names, so sessions are unchanged.
   6: (s) => ({ ...s, v: 7 }),
+  // v7 → v8: sessions unchanged; Body log entries gain optional measurement fields (measure.js).
+  7: (s) => ({ ...s, v: 8 }),
+  // v8 → v9: sessions unchanged; optional nutrition targets and an intake log are new (nutrition.js).
+  8: (s) => ({ ...s, v: 9 }),
 };
 
 // ---------------------------------------------------------------------------
-// Body log: one entry per date { date, weight (kg), waist (cm) | null, updatedAt }
+// Body log: one entry per date { date, weight (kg) | null, waist (cm) | null, …other sites (cm), bodyFat (%),
+// updatedAt }. Since v8 any subset is fine (see measure.js); an entry with no valid value at all is dropped.
 // ---------------------------------------------------------------------------
 export function normalizeBodyEntry(raw) {
   if (!raw || !isValidISODate(raw.date)) return null;
-  const weight = parseWeight(raw.weight);
-  if (weight == null || weight < 20 || weight > 400) return null;
-  const waist = parseWeight(raw.waist);
+  const w = parseWeight(raw.weight);
+  const weight = w != null && w >= 20 && w <= 400 ? w : null;
+  const { waist = null, ...rest } = cleanMeasurements(raw);
+  if (weight == null && waist == null && !Object.keys(rest).length) return null;
   return {
     date: raw.date,
     weight,
-    waist: waist != null && waist >= 30 && waist <= 300 ? waist : null,
+    waist,
+    ...rest,
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
 }
@@ -537,6 +547,25 @@ export const BACKUP_MIGRATIONS = {
       : data.sessions,
     sessionTypes: Array.isArray(data.sessionTypes) ? data.sessionTypes : null,
   }),
+  // v7 → v8: Body log entries keep weight and waist as they are; the other sites are new and optional.
+  7: (data) => ({
+    ...data,
+    schemaVersion: 8,
+    sessions: Array.isArray(data.sessions)
+      ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[7](s) : s))
+      : data.sessions,
+    body: Array.isArray(data.body) ? data.body : [],
+  }),
+  // v8 → v9: nutrition targets (off) and an empty intake log; nothing else changes.
+  8: (data) => ({
+    ...data,
+    schemaVersion: 9,
+    sessions: Array.isArray(data.sessions)
+      ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[8](s) : s))
+      : data.sessions,
+    nutrition: data.nutrition ?? null,
+    intake: data.intake ?? {},
+  }),
 };
 
 /** Upgrade a stored session record. Returns { session, changed }. */
@@ -571,6 +600,7 @@ export function pickSettings(raw) {
     out.muscleTargets = Object.fromEntries(Object.entries(raw.muscleTargets)
       .filter(([g, n]) => GROUPS.includes(g) && intIn(n, 1, 40) != null).map(([g, n]) => [g, Number(n)]));
   }
+  if (Array.isArray(raw?.measureSites)) out.measureSites = normalizeTracked(raw.measureSites);
   if (raw?.weeklyMin === null) out.weeklyMin = null;
   else if (intIn(raw?.weeklyMin, 1, 14) != null) out.weeklyMin = intIn(raw.weeklyMin, 1, 14);
   return out;
@@ -625,6 +655,8 @@ function readBackup(data, today, sessionTypes) {
     skipReasons: normalizeSkipReasons(data.skipReasons),
     profile: data.profile ? normalizeProfile(data.profile) : null,
     sessionTypes,
+    nutrition: normalizeNutrition(data.nutrition),
+    intake: normalizeIntake(data.intake),
     skipped,
   };
 }

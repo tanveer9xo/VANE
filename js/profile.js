@@ -10,7 +10,7 @@
 import { BREAK, WEEKDAY_KEYS } from './model.js';
 import { STEP_CHOICES, stepForUnits } from './units.js';
 
-export const GOALS = { fat: 'Lose fat', muscle: 'Build muscle', strength: 'Get stronger', consistency: 'Stay consistent' };
+export const GOALS = { fat: 'Lose fat', muscle: 'Build muscle', recomp: 'Recomp (lose fat, build muscle)', strength: 'Get stronger', consistency: 'Stay consistent' };
 export const EXPERIENCE = { new: 'New', mid: '1–3 years', veteran: '3+ years' };
 export const SPLITS = { ppl: 'Push/Pull/Legs', ul: 'Upper/Lower', full: 'Full body', bro: 'Bro split', arnold: 'Arnold split', custom: 'Custom' };
 export const SESSION_CHOICES = [2, 3, 4, 5, 6];
@@ -97,6 +97,12 @@ export function splitWeek(split, sessions) {
 
 /** One short sentence after an overload hint, by goal and hint kind (increase | rep | repeat | drop). */
 export const GOAL_HINT = {
+  recomp: {
+    increase: 'Getting stronger is how a recomp shows up first.',
+    rep: 'More reps at this weight count: a recomp moves slowly.',
+    repeat: 'Holding your strength is a win during a recomp.',
+    drop: 'A lighter day is fine; judge a recomp over weeks, not one session.',
+  },
   fat: {
     increase: 'Getting stronger while you lose fat is a great sign.',
     rep: 'Keeping your strength is the aim while you lose fat.',
@@ -129,8 +135,19 @@ export const goalHint = (goal, kind) => GOAL_HINT[goal]?.[kind] ?? null;
  *   r: weeklyReview() output; w(kg) formats a weight with its unit.
  * Returns { order: ['sessions'|'volume'|'prs'|'bodyweight', …], headline: string | null }.
  */
-export function reviewFocus(goal, r, w = (kg) => `${kg} kg`) {
+export function reviewFocus(goal, r, w = (kg) => `${kg} kg`, l = (cm) => `${cm} cm`) {
   const base = ['sessions', 'volume', 'prs', 'bodyweight'];
+  if (goal === 'recomp') {
+    // Judged on waist, strength and the weight trend together, never on the scale alone.
+    const parts = [];
+    if (r.waistChange != null) parts.push(r.waistChange < 0 ? `waist down ${l(Math.abs(r.waistChange))}` : r.waistChange > 0 ? `waist up ${l(r.waistChange)}` : 'waist steady');
+    parts.push(r.prs ? `${r.prs} new record${r.prs === 1 ? '' : 's'}` : 'strength holding');
+    if (r.bodyChange != null) parts.push(r.bodyChange < 0 ? `weight down ${w(Math.abs(r.bodyChange))}` : r.bodyChange > 0 ? `weight up ${w(r.bodyChange)}` : 'weight steady');
+    return {
+      order: ['waist', 'prs', 'bodyweight', 'sessions'],
+      headline: `Recomp: ${parts.join(', ')}. Read them together; weight alone can stay flat while you change.`,
+    };
+  }
   const lead = { fat: 'bodyweight', muscle: 'volume', strength: 'prs', consistency: 'sessions' }[goal];
   if (!lead) return { order: base, headline: null };
   const order = [lead, ...base.filter((k) => k !== lead)];

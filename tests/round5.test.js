@@ -128,8 +128,8 @@ test('v5 catalog is stable: running the migration again changes nothing', () => 
 
 test('v4 backups still import (exercises built on import); v5 backups carry the catalog', () => {
   const v4 = migrateBackup({ schemaVersion: 4, sessions: [{ v: 4, date: '2026-11-10', type: 'Push', exercises: [{ name: 'DB Chest Press', sets: [{ weight: 30, reps: 8 }] }] }], customExercises: ['Hip Thing'], muscles: { 'hip thing': 'Glutes' } });
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.equal(v4.sessions[0].v, 7);
+  assert.ok(SCHEMA_VERSION >= 7);
+  assert.equal(v4.sessions[0].v, SCHEMA_VERSION);
   assert.equal(v4.sessions[0].exercises[0].name, 'DB Chest Press');
   assert.equal(v4.exercises, null);
   assert.deepEqual(v4.customExercises, ['Hip Thing']);
@@ -137,7 +137,7 @@ test('v4 backups still import (exercises built on import); v5 backups carry the 
   const v5 = migrateBackup({ schemaVersion: 5, sessions: [], exercises: [{ name: 'Hip Thing', primary: ['Glutes'], custom: true, favourite: true }, { name: '' }] });
   assert.equal(v5.exercises.length, 1);
   assert.equal(v5.exercises[0].favourite, true);
-  assert.equal(upgradeSessionRecord({ v: 4, date: '2026-11-10', exercises: [] }).session.v, 7);
+  assert.equal(upgradeSessionRecord({ v: 4, date: '2026-11-10', exercises: [] }).session.v, SCHEMA_VERSION);
   assert.deepEqual(normalizeCatalogRecord({ name: 'X', primary: ['Chest'], needsMuscle: true }).needsMuscle, false);
   assert.equal(recordForName('Nothing Like It', index).needsMuscle, true);
 });

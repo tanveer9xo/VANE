@@ -1,12 +1,15 @@
 // CSV export and import. Pure functions (session types are looked up by name in the types registry).
 import { allTypes, typeName, autoShort, BREAK } from './types.js';
+import { SITE_KEYS, BODY_FAT } from './measure.js';
 // Rows: one per set ("set"), per logged rest day ("rest day"), per skipped planned day with a reason
-// ("skipped") and per exercise in your catalog ("exercise": custom exercises and muscle tags).
+// ("skipped"), per exercise in your catalog ("exercise": custom exercises and muscle tags), and per Body log
+// value: "bodyweight" (weight column, kg) and "measurement" (site + value columns: cm, or % for bodyFat).
 
 export const HEADER = [
   'date', 'session type', 'exercise', 'set number', 'weight', 'reps', 'set type', 'done', 'record', 'skip reason',
-  'primary muscle', 'secondary muscles', 'equipment', 'custom',
+  'primary muscle', 'secondary muscles', 'equipment', 'custom', 'site', 'value',
 ];
+const MEASURE_KEYS = [...SITE_KEYS, BODY_FAT.key];
 
 /** Quote when needed, and defuse spreadsheet formulas in free text (=, +, -, @ at the start). */
 export function csvField(v) {
@@ -17,9 +20,9 @@ export function csvField(v) {
 
 /**
  * sessions → CSV text (CRLF, header first, oldest day first; exercise rows last).
- * skipReasons: { date: reason }. catalog: [{ name, primary, secondary, equipment, custom }].
+ * skipReasons: { date: reason }. catalog: [{ name, primary, secondary, equipment, custom }]. body: Body log entries.
  */
-export function sessionsToCSV(sessions, skipReasons = {}, catalog = []) {
+export function sessionsToCSV(sessions, skipReasons = {}, catalog = [], body = []) {
   const byKey = new Map(catalog.map((r) => [r.name.toLowerCase(), r]));
   const muscles = (name) => {
     const r = byKey.get(String(name).toLowerCase());
@@ -39,10 +42,15 @@ export function sessionsToCSV(sessions, skipReasons = {}, catalog = []) {
   for (const [date, reason] of Object.entries(skipReasons)) {
     if (!logged.has(date)) rows.push([date, '', '', '', '', '', '', '', 'skipped', reason, '', '', '', '']);
   }
+  for (const e of body) {
+    if (e.weight != null) rows.push([e.date, '', '', '', e.weight, '', '', '', 'bodyweight']);
+    for (const k of MEASURE_KEYS) if (e[k] != null) rows.push([e.date, '', '', '', '', '', '', '', 'measurement', '', '', '', '', '', k, e[k]]);
+  }
   rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); // stable: keeps set order within a day
   const exRows = [...catalog].sort((a, b) => a.name.localeCompare(b.name))
     .map((r) => ['', '', r.name, '', '', '', '', '', 'exercise', '', ...muscles(r.name)]);
-  return `${[HEADER, ...rows, ...exRows].map((r) => r.map(csvField).join(',')).join('\r\n')}\r\n`;
+  const pad = (r) => [...r, ...Array(Math.max(0, HEADER.length - r.length)).fill('')];
+  return `${[HEADER, ...rows, ...exRows].map((r) => pad(r).map(csvField).join(',')).join('\r\n')}\r\n`;
 }
 
 /** RFC 4180-ish parser: quoted fields, doubled quotes, CRLF or LF. → string[][] */
@@ -68,7 +76,7 @@ export function parseCSV(text) {
 const unguard = (s) => (/^'[=+\-@\t\r]/.test(s) ? s.slice(1) : s);
 
 /**
- * CSV text → a backup-shaped object for migrateBackup(): { schemaVersion: 7, sessions, exercises, skipReasons, sessionTypes }.
+ * CSV text → a backup-shaped object for migrateBackup(): { schemaVersion: 8, sessions, exercises, skipReasons, sessionTypes, body }.
  * Accepts this app's CSV from 1.4 on (older files simply lack the muscle columns). Throws if it isn't one.
  */
 export function csvToBackup(text) {
@@ -93,6 +101,7 @@ export function csvToBackup(text) {
     return id;
   };
   const skipReasons = {};
+  const body = new Map(); // date → Body log entry
   const noteExercise = (r) => {
     const name = get(r, 'exercise');
     const primary = get(r, 'primary muscle');
@@ -107,6 +116,14 @@ export function csvToBackup(text) {
     const record = get(r, 'record') || 'set';
     if (record === 'exercise') { noteExercise(r); continue; }
     if (record === 'skipped') { if (date) skipReasons[date] = get(r, 'skip reason'); continue; }
+    if (record === 'bodyweight' || record === 'measurement') {
+      if (!date) continue;
+      const e = body.get(date) ?? { date };
+      if (record === 'bodyweight') e.weight = get(r, 'weight');
+      else if (MEASURE_KEYS.includes(get(r, 'site'))) e[get(r, 'site')] = get(r, 'value');
+      body.set(date, e);
+      continue;
+    }
     if (!date) continue;
     const s = sessions.get(date) ?? { date, type: typeIdFor(get(r, 'session type')), notes: '', exercises: [] };
     sessions.set(date, s);
@@ -124,7 +141,8 @@ export function csvToBackup(text) {
     noteExercise(r);
   }
   return {
-    schemaVersion: 7, sessions: [...sessions.values()], exercises: [...exercises.values()], skipReasons,
+    schemaVersion: 8, sessions: [...sessions.values()], exercises: [...exercises.values()], skipReasons,
+    body: [...body.values()],
     sessionTypes: [...known, ...created], // this device's types plus any the file named that it lacked
   };
 }

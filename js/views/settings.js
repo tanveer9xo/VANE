@@ -15,6 +15,7 @@ import { wakeLockSupported } from '../wakelock.js';
 import { applyAppearance, savedAppearance } from '../theme.js';
 import { STEP_CHOICES, shownVolume, wUnit } from '../units.js';
 import { GOALS } from '../profile.js';
+import { nutritionSummary } from './nutrition.js';
 
 export function renderSettings(root, section) {
   const view = h('div', { class: 'view settings-view' });
@@ -169,7 +170,7 @@ export function renderSettings(root, section) {
       updateBtn.disabled = true;
       const r = await checkForUpdate();
       updateBtn.disabled = false;
-      toast(r === 'found' ? 'Downloading the update. Tap Update when it appears.' : r === 'none' ? 'You have the latest version.' : 'Updates need the installed app or a secure connection.');
+      toast(r === 'ready' ? 'An update is ready: tap the banner at the top.' : r === 'found' ? 'Downloading the update. A banner appears at the top when it’s ready.' : r === 'none' ? `You have the latest version (${APP_VERSION}).` : 'Updates need the installed app or a secure connection.');
     },
   }, 'Check for updates');
 
@@ -236,9 +237,17 @@ export function renderSettings(root, section) {
       icon('chevR')),
     h('p', { class: 'fine' }, 'Stays on this phone.'));
 
+  // ---- nutrition (optional, off by default) ----
+  const nutritionRow = h('section', { class: 'card', id: 'nutrition', 'aria-labelledby': 'nutrition-h' },
+    h('h2', { id: 'nutrition-h' }, 'Nutrition'),
+    h('a', { class: 'row-link', href: '#/settings/nutrition' },
+      h('span', { class: 'row-ic' }, icon('flame')),
+      h('span', { class: 'row-text' }, h('strong', {}, 'Calorie and protein estimates'), h('small', { id: 'nutrition-summary' }, nutritionSummary())),
+      icon('chevR')));
+
   view.append(
     h('header', { class: 'topbar' }, h('h1', { tabindex: '-1' }, 'Settings')),
-    h('div', { class: 'stack' }, profileCard, appearance, stats, backup, prefs, targetsCard, app, danger));
+    h('div', { class: 'stack' }, profileCard, nutritionRow, appearance, stats, backup, prefs, targetsCard, app, danger));
   if (section === 'backup') requestAnimationFrame(() => backup.scrollIntoView({ block: 'start' }));
   if (section === 'targets') requestAnimationFrame(() => targetsCard.scrollIntoView({ block: 'start' }));
 
@@ -267,7 +276,7 @@ export function renderSettings(root, section) {
 
   function downloadCSV() {
     const sessions = store.allSessions().filter((s) => !store.isEmpty(s));
-    const file = new File([sessionsToCSV(sessions, store.state.skipReasons, [...store.state.catalog.values()])], `workout-sets-${today}.csv`, { type: 'text/csv' });
+    const file = new File([sessionsToCSV(sessions, store.state.skipReasons, [...store.state.catalog.values()], store.bodyEntries())], `workout-sets-${today}.csv`, { type: 'text/csv' });
     save(file);
     toast(`Exported ${file.name}`);
   }

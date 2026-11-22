@@ -28,6 +28,8 @@ jobs:
         run: npm test
       - name: Sub-path, offline and install check (served at /VANE/)
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/subpath.mjs
+      - name: Update flow (version bump, banner, data survives)
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/update.mjs
 
   deploy:
     needs: test

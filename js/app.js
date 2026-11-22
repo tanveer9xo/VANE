@@ -14,6 +14,7 @@ import { renderPlanner } from './views/planner.js';
 import { renderTimer } from './views/timer.js';
 import { renderOnboarding } from './views/onboarding.js';
 import { renderProfile } from './views/profile.js';
+import { renderNutrition } from './views/nutrition.js';
 import { initTimer, configureTimer } from './timer.js';
 import { sessionCSS, applyAppearance, watchSystemTheme, savedAppearance } from './theme.js';
 
@@ -62,6 +63,7 @@ async function route() {
   else if (name === 'progress') cleanup = renderProgress(main, args[0], args[1]);
   else if (name === 'welcome') cleanup = renderOnboarding(main, args[0]);
   else if (name === 'settings' && args[0] === 'profile') cleanup = renderProfile(main);
+  else if (name === 'settings' && args[0] === 'nutrition') cleanup = renderNutrition(main);
   else if (name === 'settings') cleanup = renderSettings(main, args[0]);
   else if (name === 'plan') cleanup = renderPlanner(main);
   else if (name === 'timer') cleanup = renderTimer(main);
@@ -121,7 +123,7 @@ async function boot() {
     if (!isField(document.activeElement)) document.body.classList.remove('typing');
   }, 50));
 
-  registerServiceWorker();
+  registerServiceWorker({ onBeforeUpdate: () => store.flushAll() }); // an update never loses an edit in progress
   requestPersistence();
 }
 

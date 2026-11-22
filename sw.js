@@ -1,6 +1,6 @@
 // Offline-first service worker: precache the whole app, serve from cache, update atomically.
 // Bump VERSION on every deploy (must match APP_VERSION in js/model.js — a test checks this).
-const VERSION = '1.9.3';
+const VERSION = '1.11.0';
 const CACHE = `workout-tracker-${VERSION}`;
 
 const ASSETS = [
@@ -20,6 +20,9 @@ const ASSETS = [
   './js/profile.js',
   './js/units.js',
   './js/types.js',
+  './js/measure.js',
+  './js/nutrition.js',
+  './js/views/nutrition.js',
   './js/views/onboarding.js',
   './js/views/profile.js',
   './js/library.js',

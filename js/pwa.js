@@ -1,5 +1,5 @@
 // Service worker registration, install prompt, persistent storage.
-import { h, toast } from './ui.js';
+import { h, icon, toast } from './ui.js';
 
 export const install = { prompt: null, listeners: new Set() };
 const notify = () => install.listeners.forEach((fn) => fn());
@@ -33,37 +33,63 @@ export async function promptInstall() {
 
 let registration = null;
 
-/** Ask the server for a newer version now. Resolves to 'found', 'none' or 'unsupported'. */
+// ---------------------------------------------------------------------------
+// Updates. A new version installs in the background (the new service worker waits); a banner at the top of
+// the page, in the page flow (never over content, never a toast), offers it. Tapping it saves any edit in
+// progress, lets the new worker take over and reloads. Only the app's own file cache is replaced: your data
+// (IndexedDB, and the appearance setting in localStorage) is never touched.
+// ---------------------------------------------------------------------------
+let beforeUpdate = async () => {};
+let reloadOnControllerChange = false;
+
+function updateBanner() {
+  return document.getElementById('update-banner');
+}
+
+/** Show (or show again) the "Update ready" banner for a waiting worker. */
+export function showUpdateBanner(reg = registration) {
+  if (!reg?.waiting || !navigator.serviceWorker.controller) return false;
+  updateBanner()?.remove();
+  const banner = h('div', { id: 'update-banner', class: 'update-banner', role: 'status' },
+    h('button', {
+      class: 'update-go', type: 'button',
+      onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        await beforeUpdate(); // write any in-flight edit first
+        reloadOnControllerChange = true;
+        if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        else location.reload();
+      },
+    }, icon('refresh'), h('span', {}, 'Update ready. Tap to refresh')),
+    h('button', { class: 'icon-btn update-x', type: 'button', 'aria-label': 'Dismiss: update later', onclick: () => banner.remove() }, icon('x')));
+  document.body.insertBefore(banner, document.getElementById('view'));
+  return true;
+}
+
+/**
+ * Ask the server for a newer version now. Resolves to 'ready' (waiting: the banner is shown again),
+ * 'found' (downloading: the banner appears when it's ready), 'none' or 'unsupported'.
+ */
 export async function checkForUpdate() {
   if (!registration) return 'unsupported';
+  if (registration.waiting && showUpdateBanner()) return 'ready';
   try {
     await registration.update();
   } catch {
     return 'none'; // offline
   }
-  const pending = registration.installing || registration.waiting;
-  return pending ? 'found' : 'none';
+  if (registration.waiting && showUpdateBanner()) return 'ready';
+  return registration.installing ? 'found' : 'none';
 }
 
-export function registerServiceWorker() {
+/** `onBeforeUpdate` runs before the new version takes over (the app passes "save everything now"). */
+export function registerServiceWorker({ onBeforeUpdate } = {}) {
   if (!('serviceWorker' in navigator)) return;
-  let reloadOnControllerChange = false;
+  if (onBeforeUpdate) beforeUpdate = onBeforeUpdate;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloadOnControllerChange) location.reload();
   });
-
-  const offerUpdate = (reg) => {
-    toast('A new version is ready.', {
-      timeout: 0,
-      action: {
-        label: 'Update',
-        run: () => {
-          reloadOnControllerChange = true;
-          reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
-        },
-      },
-    }).removeAttribute('data-action'); // survive navigation
-  };
+  const offerUpdate = (reg) => showUpdateBanner(reg);
 
   navigator.serviceWorker.register('./sw.js').then((reg) => {
     registration = reg;

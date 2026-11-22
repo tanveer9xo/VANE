@@ -21,7 +21,7 @@ export function splitDays(splitId, sessions, weekStartsOn = 1) {
   return weekdayLabels(weekStartsOn).map((l, i) => [l.abbr, week[WEEKDAY_KEYS[(weekStartsOn + i) % 7]]])
     .filter(([, t]) => t && t !== TYPE_BREAK).map(([d, t]) => `${d} ${shortOf(t)}`).join(', ');
 }
-const GOAL_ICON = { fat: 'flame', muscle: 'barbell', strength: 'trophy', consistency: 'calendar' };
+const GOAL_ICON = { fat: 'flame', muscle: 'barbell', recomp: 'arrows-exchange', strength: 'trophy', consistency: 'calendar' };
 const SPLIT_ICON = { ppl: 'list-details', ul: 'arrows-exchange', full: 'man', bro: 'barbell', arnold: 'trophy', custom: 'notes' };
 const EXP_SUB = { new: 'Learning the lifts', mid: 'Training regularly', veteran: 'Progress comes slowly now' };
 

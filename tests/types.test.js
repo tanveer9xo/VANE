@@ -14,11 +14,11 @@ const reset = () => setTypes(defaultTypes());
 
 test('v7: the built-ins keep their old names as ids, so v6 data needs no rewrite', () => {
   reset();
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.ok(SCHEMA_VERSION >= 7);
   assert.deepEqual(BUILTIN_IDS, ['Push', 'Pull', 'Legs', 'Upper', 'Lower', 'Full body', 'Cardio', 'Other']);
   const v6 = { v: 6, date: '2026-11-10', type: 'Full body', notes: '', createdAt: 1, updatedAt: 1, exercises: [{ id: 'a', name: 'Squat', sets: [{ weight: 100, reps: 5, done: true, type: 'working' }] }] };
   const { session } = upgradeSessionRecord(v6);
-  assert.equal(session.v, 7);
+  assert.equal(session.v, SCHEMA_VERSION);
   assert.equal(session.type, 'Full body', 'the type id is unchanged');
   assert.deepEqual(session.exercises[0].sets, v6.exercises[0].sets);
   const out = migrateBackup({ schemaVersion: 6, sessions: [v6], schedule: [{ from: '2026-11-01', days: { mon: 'Push', tue: 'Full body' } }] });

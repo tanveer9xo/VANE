@@ -17,6 +17,7 @@ import {
   DEFAULT_PROFILE, normalizeProfile, settingsForAnswers, templatesFollowDefaultStep, profileForExisting,
 } from './profile.js';
 import { setUnits, units } from './units.js';
+import { DEFAULT_NUTRITION, normalizeNutrition, normalizeIntake } from './nutrition.js';
 import {
   setTypes, defaultTypes, normalizeTypes, addType, updateType, deleteType, applyPreset, PRESETS, PRESET_TEMPLATES,
 } from './types.js';
@@ -33,6 +34,8 @@ export const state = {
   skipReasons: {}, // date → 'Busy' | 'Travel' | … for skipped planned days (optional)
   profile: { ...DEFAULT_PROFILE }, // first-run answers (schema v6) — see profile.js
   types: defaultTypes(), // session types (schema v7) — see types.js
+  nutrition: { ...DEFAULT_NUTRITION }, // optional targets, off by default (schema v9) — see nutrition.js
+  intake: {}, // { date: { kcal, protein } } manual daily totals
   lastExportAt: null,
 };
 
@@ -51,6 +54,10 @@ export async function init() {
     db.getMeta('schedule'), db.getMeta('templates'), db.getMeta('muscles'), db.getMeta('skipReasons'), db.getMeta('profile'),
     db.getMeta('sessionTypes'),
   ]);
+  // Schema v8 → v9: nothing stored yet means nutrition off and an empty intake log.
+  const [storedNutrition, storedIntake] = await Promise.all([db.getMeta('nutrition'), db.getMeta('intake')]);
+  state.nutrition = normalizeNutrition(storedNutrition);
+  state.intake = normalizeIntake(storedIntake);
   // Schema v6 → v7: session types become data. Without a stored list, the built-ins (whose ids are the old
   // names) are the list, so every session, plan day and template keeps pointing at the same type.
   state.types = normalizeTypes(storedTypes) ?? defaultTypes();
@@ -365,12 +372,27 @@ export async function usePreset(presetId, sessions) {
   return r;
 }
 
+// ---- nutrition (optional, adults only, on this phone) ----
+export async function saveNutrition(patch) {
+  state.nutrition = normalizeNutrition({ ...state.nutrition, ...patch, updatedAt: Date.now() }); // under-18 → off
+  await db.setMeta('nutrition', state.nutrition);
+  return state.nutrition;
+}
+
+/** Manual daily totals; both blank removes the day. */
+export async function saveIntake(date, { kcal = null, protein = null }) {
+  const next = { ...state.intake };
+  if (kcal == null && protein == null) delete next[date]; else next[date] = { kcal, protein };
+  state.intake = normalizeIntake(next);
+  await db.setMeta('intake', state.intake);
+}
+
 // ---- body log ----
 export const bodyEntries = () => [...state.body.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
 
 export async function saveBodyEntry(raw) {
   const entry = normalizeBodyEntry({ ...raw, updatedAt: Date.now() });
-  if (!entry) throw new Error(`Enter a bodyweight between ${units() === 'lb' ? '45 and 880 lb' : '20 and 400 kg'}.`);
+  if (!entry) throw new Error(`Enter a bodyweight (${units() === 'lb' ? '45 to 880 lb' : '20 to 400 kg'}) or at least one measurement.`);
   state.body.set(entry.date, entry);
   await db.put('body', entry);
   return entry;
@@ -422,6 +444,8 @@ export function exportPayload() {
     units: 'kg', // stored units: weights in kg and lengths in cm, whatever the profile shows
     profile: state.profile,
     sessionTypes: state.types, // schema v7: ids are what sessions, plan and templates refer to
+    nutrition: state.nutrition, // schema v9 (off unless you switched it on)
+    intake: state.intake,
     settings: state.settings,
     schedule: state.schedule,
     templates: state.templates,
@@ -482,6 +506,15 @@ export async function importData(parsed, mode) {
     const added = parsed.sessionTypes.filter((t) => !mine.has(t.id));
     if (added.length) await saveTypes([...state.types, ...added.map((t, i) => ({ ...t, order: state.types.length + i }))]);
   }
+  // Nutrition: "Replace all" takes the file's; merging keeps your settings and adds the file's intake days.
+  if (mode === 'replace') {
+    state.nutrition = normalizeNutrition(parsed.nutrition);
+    state.intake = normalizeIntake(parsed.intake);
+  } else {
+    state.intake = normalizeIntake({ ...parsed.intake, ...state.intake });
+  }
+  await db.setMeta('nutrition', state.nutrition);
+  await db.setMeta('intake', state.intake);
   // Profile: "Replace all" takes the file's answers when it has them; this phone keeps its own first-run state.
   if (mode === 'replace' && parsed.profile) {
     state.profile = normalizeProfile({ ...parsed.profile, onboarding: state.profile.onboarding, setupCardDismissed: state.profile.setupCardDismissed });
@@ -512,6 +545,8 @@ export async function eraseAll() {
   state.profile = { ...DEFAULT_PROFILE }; // back to a fresh install: the first-run flow shows again
   state.types = defaultTypes();
   setTypes(state.types);
+  state.nutrition = { ...DEFAULT_NUTRITION };
+  state.intake = {};
   setUnits('kg');
   pending.forEach((p) => clearTimeout(p.timer));
   pending.clear();
@@ -525,5 +560,7 @@ export async function eraseAll() {
     tx.objectStore('meta').put({ key: 'templates', value: state.templates });
     tx.objectStore('meta').put({ key: 'profile', value: state.profile });
     tx.objectStore('meta').put({ key: 'sessionTypes', value: state.types });
+    tx.objectStore('meta').put({ key: 'nutrition', value: state.nutrition });
+    tx.objectStore('meta').put({ key: 'intake', value: state.intake });
   });
 }

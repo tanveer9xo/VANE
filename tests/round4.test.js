@@ -26,12 +26,12 @@ const S = (date, type, exercises, extra = {}) => ({
 
 // ---------------- schema v4 ----------------
 test('v3 records gain note, startedAt and finishedAt on their way to the current schema', () => {
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.ok(SCHEMA_VERSION >= 7);
   const v3 = { v: 3, date: '2026-11-01', type: 'Push', notes: '', cardioMinutes: 20, createdAt: 1, updatedAt: 1,
     exercises: [{ id: 'a', name: 'Squat', target: null, weightStep: null, restSeconds: null, hintDismissed: false, sets: [set(100, 5)] }] };
   const { session, changed } = upgradeSessionRecord(v3);
   assert.equal(changed, true);
-  assert.equal(session.v, 7);
+  assert.equal(session.v, SCHEMA_VERSION);
   assert.equal(session.exercises[0].note, '');
   assert.equal(session.startedAt, null);
   assert.equal(session.finishedAt, null);
@@ -44,7 +44,7 @@ test('v3 backup migrates up to the current schema; v0–v2 backups still import'
     sessions: [{ v: 3, date: '2026-11-10', type: 'Legs', notes: '', exercises: [{ name: 'Squat', sets: [set(100, 5)] }] }],
     body: [{ date: '2026-11-10', weight: 80 }],
   });
-  assert.equal(v3.sessions[0].v, 7);
+  assert.equal(v3.sessions[0].v, SCHEMA_VERSION);
   assert.equal(v3.sessions[0].exercises[0].note, '');
   assert.deepEqual(v3.muscles, {});
   assert.equal(v3.body.length, 1);
@@ -53,14 +53,14 @@ test('v3 backup migrates up to the current schema; v0–v2 backups still import'
   assert.deepEqual(v4.muscles, { 'hip thrust': 'Glutes', 'leg press': null });
 
   const bare = migrateBackup([{ date: '2026-01-01', type: 'Push', exercises: [{ name: 'Bench', sets: [{ weight: 60, reps: 5 }] }] }]);
-  assert.equal(bare.sessions[0].v, 7);
+  assert.equal(bare.sessions[0].v, SCHEMA_VERSION);
   assert.equal(bare.sessions[0].exercises[0].sets[0].done, true);
   assert.equal(bare.sessions[0].exercises[0].sets[0].type, 'working');
   const v1 = migrateBackup({ schemaVersion: 1, sessions: [{ date: '2026-01-02', type: 'Rest', exercises: [] }] });
   assert.equal(v1.sessions[0].type, 'Break');
   const v2 = migrateBackup({ schemaVersion: 2, sessions: [{ v: 2, date: '2026-01-03', type: 'Pull', exercises: [{ name: 'Row', sets: [{ weight: 50, reps: 8, done: false }] }] }] });
   assert.equal(v2.sessions[0].exercises[0].sets[0].done, false);
-  assert.throws(() => migrateBackup({ schemaVersion: 8, sessions: [] }), /newer version/);
+  assert.throws(() => migrateBackup({ schemaVersion: SCHEMA_VERSION + 1, sessions: [] }), /newer version/);
 });
 
 test('sessions keep finishedAt/startedAt and per-exercise notes; junk is dropped', () => {
@@ -150,12 +150,12 @@ test('CSV: one row per set, plus rest days and skip reasons; quoted and formula-
     S('2026-11-18', 'Break', []),
   ], { '2026-11-19': 'Busy', '2026-11-17': 'Tired' }); // the 17th has a workout, so its reason isn't a skip row
   const lines = csv.trimEnd().split('\r\n');
-  assert.equal(lines[0], 'date,session type,exercise,set number,weight,reps,set type,done,record,skip reason,primary muscle,secondary muscles,equipment,custom');
-  assert.equal(lines[1], '2026-11-16,Push,"\'=HYPERLINK(""x"")",1,0,10,warmup,yes,set,,,,,');
-  assert.equal(lines[2], '2026-11-17,Pull,"Row, cable",1,50,8,working,yes,set,,,,,');
-  assert.equal(lines[3], '2026-11-17,Pull,"Row, cable",2,,,working,no,set,,,,,');
-  assert.equal(lines[4], '2026-11-18,Break,,,,,,,rest day,,,,,');
-  assert.equal(lines[5], '2026-11-19,,,,,,,,skipped,Busy,,,,');
+  assert.equal(lines[0], 'date,session type,exercise,set number,weight,reps,set type,done,record,skip reason,primary muscle,secondary muscles,equipment,custom,site,value');
+  assert.equal(lines[1], '2026-11-16,Push,"\'=HYPERLINK(""x"")",1,0,10,warmup,yes,set,,,,,,,');
+  assert.equal(lines[2], '2026-11-17,Pull,"Row, cable",1,50,8,working,yes,set,,,,,,,');
+  assert.equal(lines[3], '2026-11-17,Pull,"Row, cable",2,,,working,no,set,,,,,,,');
+  assert.equal(lines[4], '2026-11-18,Break,,,,,,,rest day,,,,,,,');
+  assert.equal(lines[5], '2026-11-19,,,,,,,,skipped,Busy,,,,,,');
   assert.equal(lines.length, 6);
   assert.equal(csvField('-5'), "'-5");
   assert.equal(csvField(-5), '-5'); // numbers are left alone

@@ -17,12 +17,12 @@ import { formatSet } from '../js/stats.js';
 const lb = (n) => Math.round(n * 0.45359237 * 10000) / 10000;
 
 test('v5 sessions upgrade unchanged apart from the version', () => {
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.ok(SCHEMA_VERSION >= 7);
   const v5 = { v: 5, date: '2026-11-10', type: 'Push', notes: 'n', cardioMinutes: null, createdAt: 1, updatedAt: 2, startedAt: null, finishedAt: null,
     exercises: [{ id: 'a', name: 'Squat', target: null, weightStep: 2.5, restSeconds: null, hintDismissed: false, note: '', sets: [{ weight: 61.2349, reps: 5, done: true, type: 'working' }] }] };
   const { session, changed } = upgradeSessionRecord(v5);
   assert.equal(changed, true);
-  assert.equal(session.v, 7);
+  assert.equal(session.v, SCHEMA_VERSION);
   assert.equal(session.exercises[0].weightStep, 2.5, 'logged history is never rewritten');
   assert.equal(session.exercises[0].sets[0].weight, 61.2349, 'stored weights keep 4 dp (pounds read back exactly)');
 });
@@ -34,7 +34,7 @@ test('v5 backup → v6: profile null, default template steps follow the setting,
     templates: { Push: [{ name: 'Bench', sets: 3, repsMin: 5, repsMax: 8, weightStep: 2.5 }, { name: 'Fly', sets: 3, repsMin: 10, repsMax: 12, weightStep: 1 }] },
   });
   assert.equal(out.profile, null);
-  assert.equal(out.sessions[0].v, 7);
+  assert.equal(out.sessions[0].v, SCHEMA_VERSION);
   assert.equal(out.templates.Push[0].weightStep, null);
   assert.equal(out.templates.Push[1].weightStep, 1);
   // A global step of 5: only template steps equal to it follow the default.
@@ -160,7 +160,7 @@ test('goal → weekly review: the lead figure and headline', () => {
 });
 
 test('labels for every answer', () => {
-  assert.deepEqual(Object.values(GOALS), ['Lose fat', 'Build muscle', 'Get stronger', 'Stay consistent']);
+  assert.deepEqual(Object.values(GOALS), ['Lose fat', 'Build muscle', 'Recomp (lose fat, build muscle)', 'Get stronger', 'Stay consistent']);
   assert.deepEqual(Object.values(EXPERIENCE), ['New', '1–3 years', '3+ years']);
   assert.deepEqual(Object.values(SPLITS), ['Push/Pull/Legs', 'Upper/Lower', 'Full body', 'Bro split', 'Arnold split', 'Custom']);
 });
