@@ -1,0 +1,15 @@
+{
+  "name": "workout-tracker",
+  "version": "1.9.3",
+  "private": true,
+  "type": "module",
+  "description": "Personal offline workout tracker PWA. No build step; this file only exists for the test/serve scripts.",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test tests/*.test.js && TZ=America/Sao_Paulo node --test tests/dates.test.js && TZ=Pacific/Auckland node --test tests/dates.test.js",
+    "test:browser": "node tests/browser/e2e.mjs light && node tests/browser/e2e.mjs dark",
+    "icons": "node tools/build-icons.mjs",
+    "test:subpath": "node tests/browser/subpath.mjs",
+    "build": "node tools/build-site.mjs"
+  }
+}

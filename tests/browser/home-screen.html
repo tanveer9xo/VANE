@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VANE home-screen preview</title>
+<!-- Test fixture: the real icon files as launchers mask them (iOS rounds the Apple touch icon; Android crops
+     the maskable icon to its own shape). Grey tiles are placeholders for other apps. Theme = system setting. -->
+<style>
+  :root { --wall: linear-gradient(160deg, #DCDFF0, #B9BEDC); --label: #1E2140; --tile: rgba(255,255,255,.55); --cap: #5F6485; }
+  @media (prefers-color-scheme: dark) { :root { --wall: linear-gradient(160deg, #1A1E3A, #05060F); --label: #F2F3FA; --tile: rgba(255,255,255,.12); --cap: #A3A9D0; } }
+  html, body { margin: 0; min-height: 100%; }
+  body { background: var(--wall); min-height: 100vh; font: 500 12px/1.2 system-ui, -apple-system, Roboto, sans-serif; color: var(--label); padding: 28px 16px; box-sizing: border-box; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--cap); margin: 0 0 14px 4px; letter-spacing: .02em; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px 8px; margin-bottom: 40px; }
+  .app { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .app img, .app .ph { width: 60px; height: 60px; display: block; }
+  .ios img, .ios .ph { border-radius: 13.5px; }
+  .circle img, .circle .ph { border-radius: 50%; }
+  .squircle img { clip-path: path('M30 0C6 0 0 6 0 30s6 30 30 30 30-6 30-30S54 0 30 0Z'); }
+  .squircle .ph { border-radius: 18px; }
+  .ph { background: var(--tile); }
+  .label { width: 72px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ph + .label { color: transparent; }
+</style>
+</head>
+<body>
+  <h2>iPhone (apple-touch-icon.png)</h2>
+  <div class="grid ios">
+    <div class="app vane"><img src="../../icons/apple-touch-icon.png" alt=""><span class="label">VANE</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+  </div>
+  <h2>Android, circle mask (icon-maskable-512.png)</h2>
+  <div class="grid circle">
+    <div class="app vane"><img src="../../icons/icon-maskable-512.png" alt=""><span class="label">VANE</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+  </div>
+  <h2>Android, squircle mask (icon-maskable-512.png)</h2>
+  <div class="grid squircle">
+    <div class="app vane"><img src="../../icons/icon-maskable-512.png" alt=""><span class="label">VANE</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+    <div class="app"><span class="ph"></span><span class="label">App</span></div>
+  </div>
+  <h2>Browser tab / desktop (icon-192.png, icon.svg)</h2>
+  <div class="grid">
+    <div class="app vane"><img src="../../icons/icon-192.png" alt=""><span class="label">VANE</span></div>
+    <div class="app vane"><img src="../../icons/icon.svg" alt="" style="width:32px;height:32px;margin:14px"><span class="label">VANE</span></div>
+  </div>
+</body>
+</html>
