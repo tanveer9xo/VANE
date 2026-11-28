@@ -92,10 +92,10 @@ test('at most 10 saved splits', () => {
 });
 
 test('v9 → v10: no saved splits yet; everything else kept; v10 backups carry them', () => {
-  assert.equal(SCHEMA_VERSION, 10);
+  assert.ok(SCHEMA_VERSION >= 10);
   const out = migrateBackup({ schemaVersion: 9, sessions: [{ v: 9, date: '2026-11-10', type: 'Push', exercises: [] }], body: [{ date: '2026-11-01', weight: 80 }] });
   assert.deepEqual(out.splits, []);
-  assert.equal(out.sessions[0].v, 10);
+  assert.equal(out.sessions[0].v, SCHEMA_VERSION);
   assert.equal(out.body[0].weight, 80);
   const v10 = migrateBackup({ schemaVersion: 10, sessions: [], splits: [snap(), { id: 'bad', name: '', days: {} }, { id: 's-z', name: 'Empty week', days: { mon: B }, types: [] }] });
   assert.deepEqual(v10.splits.map((s) => s.name), ['My 4-day'], 'invalid splits are dropped');

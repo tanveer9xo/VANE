@@ -2,11 +2,11 @@
 import { h, icon, toast, dialog, confirmDialog, brandMark } from '../ui.js';
 import { APP_NAME } from '../brand.js';
 import * as store from '../store.js';
-import { APP_VERSION, SCHEMA_VERSION, parseMinutes, normalizeRest, isTrainingType } from '../model.js';
+import { APP_VERSION, SCHEMA_VERSION, normalizeRest, isTrainingType } from '../model.js';
 import { weekStats, fmtInt, fmtNum } from '../stats.js';
-import { todayISO, toISODate, relativeDay } from '../dates.js';
+import { todayISO, toISODate, relativeDay, startOfWeek, formatShort } from '../dates.js';
 import {
-  install, isStandalone, promptInstall, installHelp, storageInfo, requestPersistence, checkForUpdate,
+  installState, installButton, storageInfo, requestPersistence, checkForUpdate,
 } from '../pwa.js';
 import { isCompleted, weekProgress } from '../plan.js';
 import { sessionsToCSV, csvToBackup } from '../csv.js';
@@ -14,7 +14,8 @@ import { checkFileSize, parseBackupText } from '../importguard.js';
 import { GROUPS } from '../muscles.js';
 import { wakeLockSupported } from '../wakelock.js';
 import { applyAppearance, savedAppearance } from '../theme.js';
-import { STEP_CHOICES, shownVolume, wUnit } from '../units.js';
+import { STEP_CHOICES, shownVolume, wUnit, fmtD, dUnit } from '../units.js';
+import { cardioTotals } from '../cardio.js';
 import { GOALS } from '../profile.js';
 import { nutritionSummary } from './nutrition.js';
 
@@ -23,13 +24,15 @@ export function renderSettings(root, section) {
   root.append(view);
   // Re-run the route so the router's cleanup/teardown stays consistent.
   const rerender = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
-  const offInstall = (() => { install.listeners.add(rerender); return () => install.listeners.delete(rerender); })();
+  const offInstall = () => {}; // install changes redraw this screen from js/app.js
 
   const today = todayISO();
   const list = store.allSessions();
   const logged = list.filter((s) => s.date <= today && isCompleted(s)).length;
   const planned = list.filter((s) => s.date > today && isTrainingType(s.type)).length;
   const { thisWeek, lastWeek } = weekStats(list, today, store.state.settings.weekStartsOn, isCompleted);
+  // Distance only from entries that have one (entered, or worked out from Time + Speed).
+  const cardioWeek = cardioTotals(list, startOfWeek(today, store.state.settings.weekStartsOn), today);
   const wk = weekProgress((d) => store.getSession(d), store.state.schedule, today, store.state.settings.weekStartsOn);
   const stat = (label, value, sub) => h('div', { class: 'stat' }, h('dt', {}, label), h('dd', { class: 'num stat-v' }, value), sub ? h('dd', { class: 'stat-sub' }, sub) : null);
 
@@ -40,9 +43,9 @@ export function renderSettings(root, section) {
       stat('Workouts', String(logged), planned ? `${planned} planned ahead` : 'all time'),
       stat('This week', `${wk.completed} of ${wk.planned}`, 'done of planned'),
       stat('Volume this week', `${fmtInt(shownVolume(thisWeek.volume))} ${wUnit()}`, `${thisWeek.sets} sets`),
-      stat('Treadmill this week', `${fmtNum(thisWeek.cardioMinutes)} min`, null)),
+      stat('Cardio this week', `${fmtNum(thisWeek.cardioMinutes, 1)} min`, cardioWeek.withDistance ? `${fmtD(cardioWeek.distanceKm, 1)} ${dUnit()} logged` : 'finished entries')),
     h('p', { class: 'fine' },
-      `Last week: ${lastWeek.sessions} workout${lastWeek.sessions === 1 ? '' : 's'}, ${fmtInt(shownVolume(lastWeek.volume))} ${wUnit()}, ${fmtNum(lastWeek.cardioMinutes)} min on the treadmill. Volume is weight × reps over ticked working sets.`));
+      `Last week: ${lastWeek.sessions} workout${lastWeek.sessions === 1 ? '' : 's'}, ${fmtInt(shownVolume(lastWeek.volume))} ${wUnit()}, ${fmtNum(lastWeek.cardioMinutes, 1)} min of cardio. Volume is weight × reps over ticked working sets.`));
 
   // ---- appearance ----
   const appearance = h('section', { class: 'card', 'aria-labelledby': 'look-h' },
@@ -58,10 +61,32 @@ export function renderSettings(root, section) {
       }, icon(ic), label))),
     h('p', { class: 'fine' }, 'System follows your phone’s light or dark mode. Saved on this phone.'));
 
+  // ---- storage protection (shown in Backup) ----
+  const storageLine = h('p', { class: 'storage-line', id: 'storage-line' }, 'Storage protected: checking…');
+  const storageNote = h('p', { class: 'fine' });
+  const persistBtn = h('button', {
+    class: 'btn block', hidden: true, id: 'persist-btn',
+    onclick: async () => {
+      const ok = await requestPersistence();
+      toast(ok ? 'Storage is now protected.' : 'The browser said no. Installing VANE usually helps; keep backups either way.');
+      refreshStorage();
+    },
+  }, 'Ask the browser to protect it');
+  async function refreshStorage() {
+    const info = await storageInfo();
+    const used = info.estimate ? ` VANE uses ${Math.max(1, Math.round(info.estimate.usage / 1024))} KB.` : '';
+    const yes = info.supported && info.persisted;
+    storageLine.replaceChildren('Storage protected: ', h('strong', {}, yes ? 'Yes' : 'Not guaranteed'));
+    storageNote.textContent = yes
+      ? `The browser won’t clear VANE’s data to free up space.${used}`
+      : `${info.supported ? 'The browser could clear VANE’s data if the phone runs very low on space.' : 'This browser can’t promise to keep data when space runs low.'} Installing VANE and keeping backups protects you.${used}`;
+    persistBtn.hidden = !info.supported || info.persisted;
+  }
+  refreshStorage();
+
   // ---- backup ----
-  const lastExport = store.state.lastExportAt
-    ? relativeDay(toISODate(new Date(store.state.lastExportAt)), today).toLowerCase()
-    : 'never';
+  const lastIso = store.state.lastExportAt ? toISODate(new Date(store.state.lastExportAt)) : null;
+  const lastExport = lastIso ? `${formatShort(lastIso, today)} (${relativeDay(lastIso, today).toLowerCase()})` : 'never';
   const fileInput = h('input', { type: 'file', accept: 'application/json,.json,text/csv,.csv', class: 'sr-only', id: 'import-file', onchange: onImportFile });
   const canShareFiles = typeof navigator.canShare === 'function'
     && navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] });
@@ -69,7 +94,9 @@ export function renderSettings(root, section) {
   const backup = h('section', { class: 'card', id: 'backup', 'aria-labelledby': 'backup-h' },
     h('h2', { id: 'backup-h' }, 'Backup'),
     h('p', { class: 'fine' }, 'Your data lives only on this phone. Export a backup now and then, for example to Files, Drive or email.'),
-    h('p', { class: 'fine' }, `Last backup: ${lastExport}.`),
+    h('p', { class: 'last-backup', id: 'last-backup' }, 'Last backup: ', h('strong', {}, lastExport)),
+    h('p', { class: 'fine' }, 'If it’s been a week, the Calendar reminds you.'),
+    storageLine, storageNote, persistBtn,
     h('div', { class: 'stack' },
       h('button', { class: 'btn primary block', onclick: download }, icon('download'), 'Export backup (JSON)'),
       canShareFiles ? h('button', { class: 'btn block', onclick: share }, icon('share'), 'Share backup') : null,
@@ -84,17 +111,6 @@ export function renderSettings(root, section) {
     h('input', { id, type: 'checkbox', class: 'switch', checked, disabled, onchange }));
   const prefs = h('section', { class: 'card', 'aria-labelledby': 'prefs-h' },
     h('h2', { id: 'prefs-h' }, 'Preferences'),
-    h('div', { class: 'field-row' },
-      h('label', { for: 'def-cardio' }, 'Default treadmill minutes'),
-      h('input', {
-        id: 'def-cardio', class: 'num-input', type: 'text', inputmode: 'numeric', autocomplete: 'off',
-        value: store.state.settings.defaultCardioMinutes ?? '', placeholder: '0',
-        onchange: async (e) => {
-          const v = parseMinutes(e.target.value);
-          await store.saveSettings({ defaultCardioMinutes: v ?? 0 });
-          e.target.value = v ?? 0;
-        },
-      })),
     h('div', { class: 'field-row' },
       h('label', { for: 'week-start' }, 'Week starts on'),
       h('select', {
@@ -143,27 +159,6 @@ export function renderSettings(root, section) {
       !wakeLockSupported()),
     h('p', { class: 'fine' }, `Units are ${wUnit()} (change them in Profile). Enter 0 for bodyweight sets. Timer sound, vibration and auto-start are on the Timer tab.`));
 
-  // ---- app & storage ----
-  const storageLine = h('p', { class: 'muted' }, 'Checking storage');
-  const persistBtn = h('button', {
-    class: 'btn block', hidden: true,
-    onclick: async () => {
-      const ok = await requestPersistence();
-      toast(ok ? 'Storage is now persistent' : 'The browser said no. Installing the app usually helps.');
-      refreshStorage();
-    },
-  }, 'Ask for persistent storage');
-  async function refreshStorage() {
-    const info = await storageInfo();
-    const used = info.estimate ? `${Math.max(1, Math.round(info.estimate.usage / 1024))} KB used. ` : '';
-    storageLine.textContent = !info.supported
-      ? `${used}This browser doesn’t offer persistent storage, so keep backups.`
-      : info.persisted
-        ? `${used}Persistent: the browser won’t clear your data when space runs low.`
-        : `${used}Not persistent yet: the browser could clear data if the phone runs low on space.`;
-    persistBtn.hidden = !info.supported || info.persisted;
-  }
-  refreshStorage();
 
   const updateBtn = h('button', {
     class: 'btn block',
@@ -175,6 +170,15 @@ export function renderSettings(root, section) {
     },
   }, 'Check for updates');
 
+  // ---- App: install (Android/Chromium prompt, or the Safari steps), or a quiet Installed ----
+  const ist = installState();
+  const appCard = ist === 'none' ? null : h('section', { class: 'card', id: 'app', 'aria-labelledby': 'install-h' },
+    h('h2', { id: 'install-h' }, 'App'),
+    ist === 'installed'
+      ? h('p', { class: 'installed', id: 'installed' }, icon('check'), h('span', {}, 'Installed. VANE opens from your home screen, full screen and offline.'))
+      : h('p', { class: 'fine' }, ist === 'ios' ? 'Add VANE to your home screen to open it like an app, full screen and offline.' : 'Install VANE to open it like an app, full screen and offline.'),
+    ist === 'installed' ? null : installButton());
+
   const app = h('section', { class: 'card', id: 'about', 'aria-labelledby': 'app-h' },
     h('h2', { id: 'app-h' }, 'About'),
     h('div', { class: 'about-brand' }, brandMark(56),
@@ -183,13 +187,6 @@ export function renderSettings(root, section) {
       h('div', {}, h('dt', {}, 'Data format'), h('dd', { class: 'num' }, `v${SCHEMA_VERSION}`)),
       h('div', {}, h('dt', {}, 'Works offline'), h('dd', {}, 'Yes'))),
     updateBtn,
-    isStandalone()
-      ? h('p', { class: 'muted' }, icon('check'), ' Installed and running as an app.')
-      : install.prompt
-        ? h('button', { class: 'btn primary block', onclick: promptInstall }, icon('phone'), 'Install app')
-        : installHelp(),
-    storageLine,
-    persistBtn,
     h('p', { class: 'fine credit' }, 'Exercise library: ',
       h('a', { href: 'https://github.com/yuhonas/free-exercise-db', target: '_blank', rel: 'noopener noreferrer' }, 'free-exercise-db'),
       ' by yuhonas, public domain (Unlicense). Icons: Tabler Icons (MIT). Font: Plus Jakarta Sans (SIL OFL).'));
@@ -212,7 +209,7 @@ export function renderSettings(root, section) {
     h('div', { class: 'field-row' },
       h('label', { for: 'target-all' }, 'Default target', h('small', {}, 'sets per week, every muscle')),
       groupInput('target-all', fallback, '10', 'Default weekly sets per muscle', async (n) => { await store.saveSettings({ muscleTarget: n ?? 10 }); rerender(); })),
-    h('div', { class: 'targets-grid' }, GROUPS.map((g) => h('label', { for: `target-${g}` }, g,
+    h('div', { class: 'targets-grid' }, GROUPS.map((g) => h('label', { for: `target-${g}` }, g.replace('/', '/\u200b'),
       groupInput(`target-${g}`, targets[g], String(fallback), `${g}: weekly target sets`, async (n) => {
         const next = { ...(store.state.settings.muscleTargets ?? {}) };
         if (n == null) delete next[g]; else next[g] = n;
@@ -248,7 +245,7 @@ export function renderSettings(root, section) {
 
   view.append(
     h('header', { class: 'topbar' }, h('h1', { tabindex: '-1' }, 'Settings')),
-    h('div', { class: 'stack' }, profileCard, nutritionRow, appearance, stats, backup, prefs, targetsCard, app, danger));
+    h('div', { class: 'stack' }, profileCard, nutritionRow, appearance, stats, backup, prefs, targetsCard, appCard, app, danger));
   if (section === 'backup') requestAnimationFrame(() => backup.scrollIntoView({ block: 'start' }));
   if (section === 'targets') requestAnimationFrame(() => targetsCard.scrollIntoView({ block: 'start' }));
 

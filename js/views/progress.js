@@ -5,6 +5,8 @@ import { typeColor } from '../types.js';
 import { groupIcon, equipmentLabel } from '../muscles.js';
 import * as store from '../store.js';
 import { exName } from '../library.js';
+import { ACTIVITIES, activityByKey, cardioEntries, cardioHistory } from '../cardio.js';
+import { toShownD, dUnit, spUnit } from '../units.js';
 import { fmtWU, toShownW, shownVolume, wUnit } from '../units.js';
 import {
   exerciseUsage, exerciseHistory, exerciseSummary, formatSets, fmtNum, fmtInt, allRecords, trendOf, stallOf,
@@ -64,7 +66,10 @@ export function renderProgress(root, arg, arg2) {
   if (seg === 'body') return renderBodySection(view, arg2);
   if (seg === 'consistency') { renderConsistency(view); return undefined; }
   if (seg === 'map') return renderBodyMap(view, arg2);
+  if (arg === '~cardio') { renderCardio(view, list, arg2, today); return undefined; }
+  const cardioCard = cardioLinks(list);
   if (!usage.length && !(seg === 'charts' && arg)) {
+    if (cardioCard) view.append(cardioCard);
     view.append(h('section', { class: 'empty-state' },
       icon('chart', 'empty-icon'),
       h('h2', {}, 'No progress to show yet'),
@@ -74,7 +79,78 @@ export function renderProgress(root, arg, arg2) {
   }
   if (seg === 'records') { renderRecords(view, list, today); return undefined; }
   renderCharts(view, list, usage, arg, today);
+  if (cardioCard) view.append(cardioCard);
   return undefined;
+}
+
+/** Charts → Cardio: a link per activity you've finished at least once. */
+function cardioLinks(list) {
+  const done = cardioEntries(list).filter((e) => e.done);
+  const acts = ACTIVITIES.filter((a) => done.some((e) => e.name === a.name));
+  if (!acts.length) return null;
+  return h('section', { class: 'card cardio-links', id: 'cardio-links', 'aria-labelledby': 'cardio-links-h' },
+    h('h2', { id: 'cardio-links-h' }, 'Cardio'),
+    h('div', { class: 'preset-btns' }, acts.map((a) => h('a', { class: 'btn small soft', href: `#/progress/~cardio/${a.key}`, dataset: { activity: a.key } }, icon(a.icon), a.name))));
+}
+
+/**
+ * One cardio activity's history: Time always; Distance and Speed only when entries have them (a value worked out
+ * from Time + the other one counts, and is marked as calculated). Several entries on a day add up (speed: average).
+ */
+function renderCardio(view, list, key, today) {
+  const act = activityByKey(key);
+  const entries = act ? cardioHistory(list, act.name) : [];
+  view.append(h('a', { class: 'link back-link', href: '#/progress' }, icon('chevL'), 'Charts'));
+  if (!act || !entries.length) {
+    view.append(h('section', { class: 'empty-state' }, icon('run', 'empty-icon'), h('h2', {}, act ? `No ${act.name.toLowerCase()} yet` : 'Not found'),
+      h('p', { class: 'muted' }, 'Add a cardio entry on the Day screen and tap Done.')));
+    return;
+  }
+  const byDate = new Map();
+  for (const e of entries) {
+    const d = byDate.get(e.date) ?? { date: e.date, minutes: 0, distanceKm: null, speeds: [], calcD: false, calcS: false };
+    d.minutes += e.minutes ?? 0;
+    if (e.distanceKm != null) { d.distanceKm = (d.distanceKm ?? 0) + e.distanceKm; d.calcD ||= e.calc === 'distance'; }
+    if (e.speedKmh != null) { d.speeds.push(e.speedKmh); d.calcS ||= e.calc === 'speed'; }
+    byDate.set(e.date, d);
+  }
+  const days = [...byDate.values()].map((d) => ({ ...d, speedKmh: d.speeds.length ? d.speeds.reduce((a, b) => a + b, 0) / d.speeds.length : null }));
+  const withD = days.filter((d) => d.distanceKm != null);
+  const withS = days.filter((d) => d.speedKmh != null);
+  const metrics = [
+    { id: 'time', label: 'Time', pts: days.map((d) => ({ date: d.date, value: Math.round(d.minutes * 10) / 10 })), fmt: (v) => `${fmtNum(v, 1)} min` },
+    withD.length ? { id: 'distance', label: 'Distance', pts: withD.map((d) => ({ date: d.date, value: Math.round(toShownD(d.distanceKm) * 100) / 100 })), fmt: (v) => `${fmtNum(v, 2)} ${dUnit()}` } : null,
+    withS.length ? { id: 'speed', label: 'Speed', pts: withS.map((d) => ({ date: d.date, value: Math.round(toShownD(d.speedKmh) * 10) / 10 })), fmt: (v) => `${fmtNum(v, 1)} ${spUnit()}` } : null,
+  ].filter(Boolean);
+  let metric = metrics[0];
+  const holder = h('div');
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Measure' });
+  const draw = () => {
+    seg.replaceChildren(...metrics.map((m) => h('button', { class: 'seg-btn', 'aria-pressed': String(m === metric), dataset: { metric: m.id }, onclick: () => { metric = m; draw(); } }, m.label)));
+    holder.replaceChildren(metric.pts.length >= 2
+      ? lineChart(metric.pts, { label: `${act.name}: ${metric.label.toLowerCase()}`, format: metric.fmt, valueName: metric.label })
+      : h('p', { class: 'muted chart-empty' }, 'The chart appears after two days with this.'));
+  };
+  draw();
+  const total = days.reduce((n, d) => n + d.minutes, 0);
+  view.append(
+    h('section', { class: 'card', id: 'cardio-history', dataset: { activity: act.key }, 'aria-labelledby': 'cardio-h' },
+      h('h2', { id: 'cardio-h' }, act.name),
+      h('dl', { class: 'stat-row' },
+        h('div', { class: 'stat' }, h('dt', {}, 'Sessions'), h('dd', { class: 'num stat-v' }, String(days.length))),
+        h('div', { class: 'stat' }, h('dt', {}, 'Total time'), h('dd', { class: 'num stat-v' }, `${fmtNum(total, 1)} min`)),
+        withD.length ? h('div', { class: 'stat' }, h('dt', {}, 'Total distance'), h('dd', { class: 'num stat-v' }, `${fmtNum(toShownD(withD.reduce((n, d) => n + d.distanceKm, 0)), 1)} ${dUnit()}`),
+          h('dd', { class: 'stat-sub' }, `${withD.length} of ${days.length} days have a distance`)) : null),
+      metrics.length > 1 ? h('div', { class: 'filters' }, seg) : null,
+      holder),
+    h('section', { class: 'card list', 'aria-labelledby': 'cardio-hist-h' },
+      h('h2', { id: 'cardio-hist-h', class: 'list-title' }, 'History'),
+      h('ul', { class: 'rows cardio-rows' }, [...days].reverse().map((d) => h('li', { class: 'cardio-row' },
+        h('a', { class: 'recent-row', href: `#/day/${d.date}` },
+          h('span', { class: 'recent-date' }, formatShort(d.date, today)),
+          h('span', { class: 'num' }, [`${fmtNum(d.minutes, 1)} min`,
+            d.distanceKm != null ? `${fmtNum(toShownD(d.distanceKm), 2)} ${dUnit()}${d.calcD ? ' (calculated)' : ''}` : null,
+            d.speedKmh != null ? `${fmtNum(toShownD(d.speedKmh), 1)} ${spUnit()}${d.calcS ? ' (calculated)' : ''}` : null].filter(Boolean).join(' · '))))))));
 }
 
 /** Colour of an exercise: the session type it is logged under most often. */

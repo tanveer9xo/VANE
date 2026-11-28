@@ -17,7 +17,8 @@ export a backup.
 | A compromised build or deploy | Workflow permissions: read-only by default; only the deploy job can write Pages (`pages: write`, `id-token: write`). Checkout doesn't keep credentials. Deploys go through GitHub's OIDC Pages flow, with no stored secrets. | `.github/workflows/pages.yml` |
 | Clickjacking | `js/boot.js` refuses to show the app inside a frame. | `js/boot.js` |
 | A poisoned update or cache | The service worker handles only same-origin GET requests inside its own path, and caches only plain successful static files (no redirects, errors or opaque responses). Precaching bypasses the HTTP cache (`cache: 'reload'`), update checks use `updateViaCache: 'none'`, and a failed download leaves the old version running. The cache is versioned, and activation deletes only this app's old caches (`workout-tracker-*`). | `sw.js`, `js/pwa.js` |
-| Losing data during an update | An update saves in-flight edits first and replaces only the file cache, never IndexedDB or localStorage. | `js/pwa.js`, `tests/browser/update.mjs` |
+| Losing data during an update | An update saves in-flight edits first and replaces only this app's own file caches, never IndexedDB, localStorage or anyone else's caches on the origin. | `js/pwa.js`, `sw.js`, `tests/browser/update.mjs` |
+| A data migration going wrong | Snapshot of every store first (the last 2 kept); the migration runs in memory and is checked (workouts, sets, types, saved splits, Body log) before one atomic write. A failed check writes nothing and offers the snapshot as an exportable backup. Data from a newer version is never modified by an older copy of the app. | `js/migrate.js`, `js/store.js`, `tests/browser/datasafety.mjs` |
 
 ## Content-Security-Policy
 
@@ -49,7 +50,7 @@ A service worker from another repo can't take over VANE's `/VANE/` scope (GitHub
 
 - **Someone with your unlocked phone,** or anything running in your browser profile (for example a malicious browser extension), can read your data. It isn't encrypted at rest beyond what the device does.
 - **Exported backups are plain JSON or CSV.** Keep them somewhere private.
-- **Browsers can evict storage under pressure.** Ask for persistent storage in Settings → About and keep backups.
+- **Browsers can evict storage under pressure.** Ask for persistent storage in Settings → Backup and keep backups.
 - **Health estimates are not medical advice.** The nutrition estimates are averages (see "How it's counted").
 
 ## Checks

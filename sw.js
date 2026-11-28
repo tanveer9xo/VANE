@@ -1,6 +1,9 @@
 // Offline-first service worker: precache the whole app, serve from cache, update atomically.
 // Bump VERSION on every deploy (must match APP_VERSION in js/model.js — a test checks this).
-const VERSION = '1.13.0';
+const VERSION = '1.15.0';
+// The data format this version stores (= SCHEMA_VERSION in js/model.js; a test checks). The update banner asks a
+// waiting worker for it, to suggest a backup before an update that changes how data is stored.
+const SCHEMA = 11;
 const CACHE = `workout-tracker-${VERSION}`;
 
 const ASSETS = [
@@ -23,6 +26,8 @@ const ASSETS = [
   './js/measure.js',
   './js/nutrition.js',
   './js/splits.js',
+  './js/cardio.js',
+  './js/migrate.js',
   './js/routes.js',
   './js/importguard.js',
   './js/boot.js',
@@ -80,6 +85,7 @@ self.addEventListener('activate', (event) => {
 // The page asks the waiting worker to take over when the user taps "Update".
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type === 'VERSION') event.ports?.[0]?.postMessage({ version: VERSION, schema: SCHEMA });
 });
 
 // Only GET requests for this origin AND inside this app's own path (/VANE/ on GitHub Pages, where other

@@ -37,6 +37,10 @@ jobs:
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/update.mjs
       - name: Security (CSP, deep links, malicious imports)
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/security.mjs
+      - name: Data safety (snapshots, rollback, newer data)
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/datasafety.mjs
+      - name: Install button (every state, both themes, 3 widths)
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/browser/install.mjs
 
   deploy:
     needs: test

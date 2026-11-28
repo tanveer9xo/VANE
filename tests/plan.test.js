@@ -97,7 +97,7 @@ test('weekProgress counts completed vs planned training days', () => {
   assert.equal(wk.completed, 2);
   assert.equal(wk.planned, 5); // Push, Pull, Legs, Upper, Lower
   // An unplanned extra session on a break day counts as both.
-  sessions.set('2026-11-19', S('2026-11-19', 'Cardio', [], { cardioMinutes: 30 }));
+  sessions.set('2026-11-19', { ...S('2026-11-19', 'Cardio', []), exercises: [{ id: 'c', name: 'Treadmill', kind: 'cardio', sets: [], cardio: { minutes: 30, done: true } }] }); // a finished cardio entry
   const wk2 = weekProgress((d) => sessions.get(d) ?? null, sched, TODAY, 1);
   assert.equal(wk2.completed, 3);
   assert.equal(wk2.planned, 6);

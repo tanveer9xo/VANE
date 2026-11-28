@@ -3,12 +3,15 @@ import { allTypes, typeName, autoShort, BREAK } from './types.js';
 import { SITE_KEYS, BODY_FAT } from './measure.js';
 // Rows: one per set ("set"), per logged rest day ("rest day"), per skipped planned day with a reason
 // ("skipped"), per exercise in your catalog ("exercise": custom exercises and muscle tags), and per Body log
-// value: "bodyweight" (weight column, kg) and "measurement" (site + value columns: cm, or % for bodyFat).
+// value: "bodyweight" (weight column, kg) and "measurement" (site + value columns: cm, or % for bodyFat),
+// and per cardio entry ("cardio": minutes, distance km, speed km/h, incline %, calories; empty stays empty).
 
 export const HEADER = [
   'date', 'session type', 'exercise', 'set number', 'weight', 'reps', 'set type', 'done', 'record', 'skip reason',
   'primary muscle', 'secondary muscles', 'equipment', 'custom', 'site', 'value',
+  'minutes', 'distance km', 'speed km/h', 'incline %', 'calories',
 ];
+const CARDIO_COLS = [['minutes', 'minutes'], ['distanceKm', 'distance km'], ['speedKmh', 'speed km/h'], ['incline', 'incline %'], ['kcal', 'calories']];
 const MEASURE_KEYS = [...SITE_KEYS, BODY_FAT.key];
 
 /** Quote when needed, and defuse spreadsheet formulas in free text (=, +, -, @ at the start). */
@@ -34,6 +37,11 @@ export function sessionsToCSV(sessions, skipReasons = {}, catalog = [], body = [
     if (s.type === 'Break') { rows.push([s.date, 'Break', '', '', '', '', '', '', 'rest day', '', '', '', '', '']); continue; }
     logged.add(s.date);
     for (const ex of s.exercises) {
+      if (ex.kind === 'cardio') {
+        const c = ex.cardio ?? {};
+        rows.push([s.date, s.type ? typeName(s.type) : '', ex.name, '', '', '', '', c.done ? 'yes' : 'no', 'cardio', '', '', '', '', '', '', '', ...CARDIO_COLS.map(([k]) => c[k] ?? '')]);
+        continue;
+      }
       ex.sets.forEach((set, i) => {
         rows.push([s.date, s.type ? typeName(s.type) : '', ex.name, i + 1, set.weight ?? '', set.reps ?? '', set.type ?? 'working', set.done ? 'yes' : 'no', 'set', '', ...muscles(ex.name)]);
       });
@@ -76,7 +84,7 @@ export function parseCSV(text) {
 const unguard = (s) => (/^'[=+\-@\t\r]/.test(s) ? s.slice(1) : s);
 
 /**
- * CSV text → a backup-shaped object for migrateBackup(): { schemaVersion: 8, sessions, exercises, skipReasons, sessionTypes, body }.
+ * CSV text → a backup-shaped object for migrateBackup(): { schemaVersion: 11, sessions, exercises, skipReasons, sessionTypes, body }.
  * Accepts this app's CSV from 1.4 on (older files simply lack the muscle columns). Throws if it isn't one.
  */
 export function csvToBackup(text) {
@@ -128,6 +136,15 @@ export function csvToBackup(text) {
     const s = sessions.get(date) ?? { date, type: typeIdFor(get(r, 'session type')), notes: '', exercises: [] };
     sessions.set(date, s);
     if (record === 'rest day') { s.type = 'Break'; continue; }
+    if (record === 'cardio') {
+      // One entry, no sets; an empty cell stays empty (null), never 0.
+      const name = get(r, 'exercise');
+      if (!name) continue;
+      const cardio = Object.fromEntries(CARDIO_COLS.map(([k, col]) => [k, get(r, col) === '' ? null : Number(get(r, col))]));
+      cardio.done = get(r, 'done') === 'yes';
+      s.exercises.push({ name, kind: 'cardio', sets: [], cardio });
+      continue;
+    }
     const name = get(r, 'exercise');
     if (!name) continue;
     let ex = s.exercises.find((e) => e.name.toLowerCase() === name.toLowerCase());
@@ -141,7 +158,7 @@ export function csvToBackup(text) {
     noteExercise(r);
   }
   return {
-    schemaVersion: 8, sessions: [...sessions.values()], exercises: [...exercises.values()], skipReasons,
+    schemaVersion: 11, sessions: [...sessions.values()], exercises: [...exercises.values()], skipReasons,
     body: [...body.values()],
     sessionTypes: [...known, ...created], // this device's types plus any the file named that it lacked
   };

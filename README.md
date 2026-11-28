@@ -220,7 +220,7 @@ Run through this on a real phone after deploying, since browsers differ here.
 
 The repository root *is* the site. All paths are relative, so it works at a domain root or a sub-path such as `username.github.io/workout-tracker/`.
 
-**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.13.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
+**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.15.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
 
 ### GitHub Pages
 The repo `VANE` is served at `https://<you>.github.io/VANE/`. Every URL in the app is relative (manifest `start_url`/`scope`/`id` are `./`, the service worker registers `./sw.js` and precaches `./…`), so the sub-path just works. `npm run test:subpath` proves it: it serves the built site under `/VANE/` and checks the service worker scope, the precache, the manifest, Chrome's install criteria and offline use.
@@ -285,11 +285,11 @@ tests/browser/e2e.mjs Browser test over the Chrome DevTools protocol (no depende
 
 Routes: `#/cal/2026-11`, `#/day/2026-11-20`, `#/plan`, `#/timer`, `#/progress[/<exercise>]`, `#/progress/~records`, `#/progress/~map`, `#/progress/~body[/<date>]`, `#/progress/~consistency`, `#/settings[/backup|/targets]`. The 1.3 route `#/body` redirects to Progress → Body.
 
-### Data model (schema v9, IndexedDB v2)
+### Data model (schema v11, IndexedDB v2)
 
 | store       | key    | value |
 |-------------|--------|-------|
-| `sessions`  | `date` | `{ v: 9, date, type, exercises, cardioMinutes, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. |
+| `sessions`  | `date` | `{ v: 11, date, type, exercises, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. A cardio exercise is `{ kind: 'cardio', name, sets: [], cardio: { minutes, distanceKm, speedKmh, incline, kcal, done, timerStartedAt } }` (empty = null). |
 | `exercises` | `key`  | the exercise catalog: `{ key, name, libId, primary: [group], secondary: [group], equipment, custom, favourite, needsMuscle }` |
 | `body`      | `date` | `{ date, weight (kg) \| null, waist (cm) \| null, neck, shoulders, chest, armL, armR, forearm, hips, thighL, thighR, calf (cm, only those recorded), bodyFat (%, optional), updatedAt }`. Any subset; nothing is required (v8). |
 | `meta`      | `key`  | `settings`, `schedule`, `templates`, `skipReasons`, `profile`, `sessionTypes`, `nutrition`, `intake`, `lastExportAt` (and v4's `muscles`, kept but no longer used) |
@@ -345,6 +345,39 @@ Backup file: `{ app, schemaVersion: 9, appVersion, exportedAt, units: 'kg' (stor
 - **Your choices:** tap it to update, or dismiss it until Settings → About → Check for updates brings it back. About shows the version.
 - **Data is never touched:** updating saves any edit in progress first, then replaces only the app's own file cache (`workout-tracker-*`). IndexedDB and localStorage stay as they are.
 - **Tested:** `npm run test:update` bumps the version on a test server and checks the banner, Dismiss, the reload and that every record survives.
+
+### Install and data safety (1.15)
+- **Install:**
+  - **Android/Chromium:** the browser's `beforeinstallprompt` is kept for an **Install VANE** button in Settings → App (above About) and a one-time, dismissible Calendar card.
+  - **iPhone/iPad Safari** (which has no prompt): **Add to your home screen** opens the three steps (Share → Add to Home Screen → Add), with a note that it must be Safari.
+  - **Elsewhere:** other iOS browsers can't install a web app, so nothing is offered. Once installed (or running standalone) Settings shows a quiet **Installed**.
+  - **No nagging:** dismissing the Calendar card is remembered.
+- **Updates never touch your data:** an update only replaces this app's own file caches (`workout-tracker-*`), never IndexedDB, localStorage or anyone else's caches on the same origin. In-flight edits are saved first, and the reload returns to the same screen.
+- **Updates that change the data format:** the "Update ready" banner says **Export a backup before updating**, with an Export button. It asks the waiting version which format it brings; `SCHEMA` in `sw.js` matches `SCHEMA_VERSION`, and a test checks.
+- **Migrations are snapshot-first and all-or-nothing** (`js/migrate.js`):
+  1. **Snapshot:** before stored data is migrated, every store is copied into a `snapshots` store (IndexedDB v3). The last 2 are kept.
+  2. **Migrate and check:** the migration runs in memory, then a check compares workouts, sets, session types, saved splits and Body log entries.
+  3. **Write once:** only then is everything written in one transaction, with a `schemaVersion` marker.
+  4. **If the check fails:** nothing is written. The app shows **VANE couldn't update your data**, with an Export button for the snapshot (an importable backup) and Try again.
+- **Data from a newer version** (a stale cached copy of the app): nothing is read-modify-written. The app shows **Update VANE to open this data** and starts the update.
+- **Storage:** VANE asks the browser to persist storage at first launch and after install. Settings → Backup shows **Storage protected: Yes / Not guaranteed** with a short explanation, plus the date of the last backup; the Calendar reminds you weekly.
+- **Tests:**
+  - `tests/migrate.test.js` upgrades realistic stored data from every format v1–v10 and deep-compares it, rolls back an interrupted migration, and round-trips export → import.
+  - `npm run test:datasafety` covers real IndexedDB: snapshot, rollback, newer data and the 2-snapshot limit.
+  - `npm run test:update` covers a data-changing update with a workout in progress and other sites' storage untouched.
+  - `npm run test:install` covers every install state at 320/360/412 px in light and dark.
+
+### Cardio (1.14)
+- **Adding:** Add exercise has a **Cardio** group: Treadmill, Walking, Running, Jogging, Cycling, Rowing, Stairs and Other cardio. A cardio exercise can go on any day and is one entry, with no sets, kg or reps.
+- **The card:**
+  - **Time** (minutes) is the only thing **Done** needs. A Start/Stop timer can fill it in.
+  - **Optional fields:** Distance (km or mi, per profile), Avg speed (km/h or mph), Incline % and Calories. Empty stays empty, never 0.
+  - **Calculation:** with Time plus Distance or Speed, the other is worked out live and marked "calculated". It's shown, never stored. With only Time, Distance and Speed stay blank.
+- **Part of the day:** a day with cardio is still one session, and cardio shows as a small badge on the day and on its calendar cell. A Cardio-type day opens with a Treadmill entry.
+- **Totals:** weekly cardio minutes (finished entries) appear in Settings → Stats and in the Calendar's "This week". Distance totals count only entries that have a distance.
+- **History:** Progress → Charts → Cardio has one history per activity. Time is always shown; Distance and Speed appear only when entries have them.
+- **Backups:** JSON and CSV (`cardio` rows: minutes, distance km, speed km/h, incline %, calories) keep empty values empty.
+- **Migration (v10 → v11):** a workout's old treadmill minutes became a Treadmill entry in that workout, marked done if the workout was done. The old "Default treadmill minutes" setting (which pre-filled 20 minutes on every workout) is gone.
 
 ### Saved splits (1.12)
 - **Saving:** Planner → **Save as my split** names a snapshot of the current week: the 7 days, the session types it uses (name, short label, colour) and their templates (exercises, sets, rep ranges, rest and step).

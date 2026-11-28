@@ -28,7 +28,7 @@ export const GROUPS = [
   { id: 'bodyFat', label: 'Body fat % (your own estimate)' },
 ];
 export const GROUP_IDS = GROUPS.map((g) => g.id);
-export const DEFAULT_TRACKED = ['chest', 'waist', 'hips', 'upperArm', 'thigh'];
+export const DEFAULT_TRACKED = ['chest', 'upperArm', 'waist', 'hips', 'thigh']; // body order, as normalizeTracked keeps it
 
 /** A valid tracking list (unknown ids dropped, body order kept); not an array → the defaults. */
 export function normalizeTracked(raw) {

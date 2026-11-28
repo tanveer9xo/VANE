@@ -19,6 +19,9 @@ import {
 import { setUnits, units } from './units.js';
 import { DEFAULT_NUTRITION, normalizeNutrition, normalizeIntake } from './nutrition.js';
 import {
+  storedSchema, hasData, makeSnapshot, migrateStored, verifyMigration, MigrationError, SNAPSHOTS_KEPT, snapshotToBackup,
+} from './migrate.js';
+import {
   snapshotSplit, applySavedSplit, addSplit, renameSplit, duplicateSplit, updateSplit, deleteSplit, normalizeSplits,
 } from './splits.js';
 import {
@@ -26,6 +29,9 @@ import {
 } from './types.js';
 
 export const state = {
+  blocked: null, // { kind: 'newer' | 'failed', … } when the data can't be opened safely (see init)
+  storedSchema: null,
+  snapshotId: null,
   sessions: new Map(), // date → session
   catalog: new Map(), // exercise key → { key, name, libId, primary, secondary, equipment, custom, favourite, needsMuscle }
   library: [], // the bundled exercise library (data/exercises.json)
@@ -53,57 +59,48 @@ const emit = (s) => saveListeners.forEach((fn) => fn(s));
 
 export async function init() {
   await db.open();
-  const [records, custom, settings, lastExportAt, schedule, storedTemplates, muscles, skipReasons, storedProfile, storedTypes] = await Promise.all([
-    db.getAll('sessions'), db.getAll('exercises'), db.getMeta('settings'), db.getMeta('lastExportAt'),
-    db.getMeta('schedule'), db.getMeta('templates'), db.getMeta('muscles'), db.getMeta('skipReasons'), db.getMeta('profile'),
-    db.getMeta('sessionTypes'),
-  ]);
-  // Schema v8 → v9: nothing stored yet means nutrition off and an empty intake log.
-  const [storedNutrition, storedIntake, storedSplits] = await Promise.all([db.getMeta('nutrition'), db.getMeta('intake'), db.getMeta('splits')]);
-  state.splits = normalizeSplits(storedSplits); // v9 → v10: none saved yet
-  state.nutrition = normalizeNutrition(storedNutrition);
-  state.intake = normalizeIntake(storedIntake);
-  // Schema v6 → v7: session types become data. Without a stored list, the built-ins (whose ids are the old
-  // names) are the list, so every session, plan day and template keeps pointing at the same type.
-  state.types = normalizeTypes(storedTypes) ?? defaultTypes();
+  const raw = await db.readAll();
+  // 1. A newer data format than this code (a stale cached copy): read nothing, change nothing.
+  const stored = storedSchema(raw);
+  state.storedSchema = stored;
+  if (stored > SCHEMA_VERSION) {
+    state.blocked = { kind: 'newer', stored };
+    return;
+  }
+  // 2. An older format: copy everything into a snapshot before changing anything (the last 2 are kept).
+  const migrating = stored < SCHEMA_VERSION && hasData(raw);
+  if (migrating) state.snapshotId = await db.saveSnapshot(makeSnapshot(raw, stored), SNAPSHOTS_KEPT);
+  // 3–4. Work the new data out in memory and check nothing was lost. On any failure nothing is written.
+  let plan;
+  try {
+    plan = migrateStored(raw, { today: todayISO() });
+    if (migrating) verifyMigration(raw, plan);
+  } catch (err) {
+    console.error(err);
+    state.blocked = { kind: 'failed', stored, message: err instanceof MigrationError ? err.message : `${err.name}: ${err.message}`, snapshotId: state.snapshotId ?? null };
+    return;
+  }
+  const p = plan.state;
+  state.types = p.types;
   setTypes(state.types);
-  if (!storedTypes) await db.setMeta('sessionTypes', state.types);
-  state.skipReasons = normalizeSkipReasons(skipReasons);
-  (await db.getAll('body')).forEach((e) => state.body.set(e.date, e));
-  const rewrites = [];
-  for (const rec of records) {
-    const { session, changed } = upgradeSessionRecord(rec);
-    if (!session) continue;
-    state.sessions.set(session.date, session);
-    if (changed) rewrites.push(session);
-  }
-  if (rewrites.length) await db.putMany('sessions', rewrites);
-  state.settings = { ...DEFAULT_SETTINGS, ...pickSettings(settings) };
-  state.lastExportAt = lastExportAt ?? null;
-
-  // Schema v5 → v6: no profile yet. With logged workouts there's no first-run flow, just a one-time card;
-  // template steps that only repeated the default now follow it (same numbers; see profile.js).
-  const upgradingToV6 = !storedProfile;
-  const templates = upgradingToV6 ? templatesFollowDefaultStep(storedTemplates, state.settings.weightStep) : storedTemplates;
-  state.profile = upgradingToV6
-    ? profileForExisting([...state.sessions.values()].some((s) => !isEmpty(s)))
-    : normalizeProfile(storedProfile);
+  state.splits = p.splits;
+  state.nutrition = p.nutrition;
+  state.intake = p.intake;
+  state.skipReasons = p.skipReasons;
+  p.body.forEach((e) => state.body.set(e.date, e));
+  p.sessions.forEach((x) => state.sessions.set(x.date, x));
+  state.settings = p.settings;
+  state.lastExportAt = p.lastExportAt;
+  state.profile = p.profile;
   setUnits(state.profile.units);
-  if (upgradingToV6) await db.setMeta('profile', state.profile);
-
-  // Schedule & templates live under their own keys. App 1.1 kept them inside settings; a fresh
-  // install gets the defaults, effective from today (so earlier days are never shown as missed).
-  const today = todayISO();
-  state.schedule = normalizeSchedule(schedule, today) ?? normalizeSchedule(settings?.schedule, today) ?? defaultSchedule(today);
-  state.templates = normalizeTemplates(templates ?? settings?.templates);
-  if (!schedule || !storedTemplates || upgradingToV6 || settings?.schedule || settings?.templates) {
-    await db.run('meta', 'readwrite', (tx) => {
-      const meta = tx.objectStore('meta');
-      meta.put({ key: 'schedule', value: state.schedule });
-      meta.put({ key: 'templates', value: state.templates });
-      meta.put({ key: 'settings', value: state.settings });
-    });
-  }
+  state.schedule = p.schedule;
+  state.templates = p.templates;
+  // 5. Write it all at once (sessions + meta, one transaction), with the format it's now in.
+  const writes = { ...plan.writes, meta: { ...plan.writes.meta } };
+  if (raw.meta.schemaVersion !== SCHEMA_VERSION) writes.meta.schemaVersion = SCHEMA_VERSION;
+  if (writes.sessions.length || Object.keys(writes.meta).length) await db.writeMigration(writes);
+  const custom = raw.exercises;
+  const muscles = raw.meta.muscles;
 
   // Exercise catalog (schema v5). Built from the v4 custom names and muscle tags the first time, then kept
   // up to date with every name in your history and templates. Names are never changed.
@@ -115,7 +112,7 @@ export async function init() {
   }
   state.libIndex = indexLibrary(state.library);
   const names = [
-    ...allSessions().flatMap((s) => s.exercises.map((e) => e.name)),
+    ...allSessions().flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').map((e) => e.name)), // cardio isn't in the exercise catalog
     ...Object.values(state.templates).flat().map((t) => t.name),
   ];
   state.catalog = buildCatalog({
@@ -213,7 +210,7 @@ export const exLabel = (name) => exName(name);
 export async function syncCatalog() {
   if (!state.library.length) return;
   const names = [
-    ...allSessions().flatMap((s) => s.exercises.map((e) => e.name)),
+    ...allSessions().flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').map((e) => e.name)),
     ...Object.values(state.templates).flat().map((t) => t.name),
   ];
   const added = [];
@@ -287,7 +284,7 @@ export function allExerciseNames() {
   const add = (name) => { const k = keyOf(name); if (k && !map.has(k)) map.set(k, cleanName(name)); };
   DEFAULT_EXERCISES.forEach(add);
   state.catalog.forEach((r) => add(r.name));
-  state.sessions.forEach((s) => s.exercises.forEach((e) => add(e.name)));
+  state.sessions.forEach((s) => s.exercises.forEach((e) => { if (e.kind !== 'cardio') add(e.name); }));
   return [...map].map(([key, name]) => ({ key, name }));
 }
 
@@ -375,6 +372,14 @@ export async function usePreset(presetId, sessions) {
   await saveTemplates(r.templates);
   await saveWeek(r.week);
   return r;
+}
+
+// ---- snapshots (taken before a data migration) ----
+/** The newest snapshot (or the one with `id`) as a backup file's contents. */
+export async function snapshotBackup(id = null) {
+  const snaps = await db.getSnapshots();
+  const snap = id ? snaps.find((x) => x.id === id) : snaps[0];
+  return snap ? snapshotToBackup(snap) : null;
 }
 
 // ---- saved splits ("Save as my split") ----
@@ -511,7 +516,7 @@ export async function markExported() {
 export async function importData(parsed, mode) {
   const { sessions, customExercises = [], settings, schedule, templates, body = [], muscles = {}, skipReasons = {} } = parsed;
   // The file's exercise catalog: v5 files carry it; older files are converted the same way as on startup.
-  const names = sessions.flatMap((s) => s.exercises.map((e) => e.name));
+  const names = sessions.flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').map((e) => e.name));
   const incoming = parsed.exercises
     ? new Map(parsed.exercises.map((r) => [r.key, r]))
     : buildCatalog({
@@ -583,8 +588,8 @@ export async function importData(parsed, mode) {
 export { migrateBackup };
 
 export async function eraseAll() {
-  await db.run(['sessions', 'exercises', 'meta', 'body'], 'readwrite', (tx) => {
-    ['sessions', 'exercises', 'meta', 'body'].forEach((n) => tx.objectStore(n).clear());
+  await db.run(['sessions', 'exercises', 'meta', 'body', 'snapshots'], 'readwrite', (tx) => {
+    ['sessions', 'exercises', 'meta', 'body', 'snapshots'].forEach((n) => tx.objectStore(n).clear()); // "erase all" means all
   });
   state.body.clear();
   state.catalog = new Map();

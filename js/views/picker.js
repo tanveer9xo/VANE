@@ -4,6 +4,7 @@
 import { h, icon, toast } from '../ui.js';
 import * as store from '../store.js';
 import { exName } from '../library.js';
+import { ACTIVITIES } from '../cardio.js';
 import { cleanName, exerciseKey } from '../model.js';
 import { formatSets } from '../stats.js';
 import { formatShort } from '../dates.js';
@@ -40,7 +41,7 @@ function buildItems() {
  * lastFor(key) → { date, sets } | null; allowNew → offer "Create custom exercise"; title.
  * Resolves to the chosen exercise name (added to your catalog), or null if cancelled.
  */
-export function openExercisePicker({ usage = new Map(), present = new Set(), lastFor = () => null, allowNew = true, title = 'Add exercise' } = {}) {
+export function openExercisePicker({ usage = new Map(), present = new Set(), lastFor = () => null, allowNew = true, title = 'Add exercise', cardio = false } = {}) {
   return new Promise((resolve) => {
     let result = null;
     let muscle = null;
@@ -49,6 +50,8 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
     let active = -1;
     let shown = [];
     const all = buildItems();
+    // The Cardio group (Day screen only): one entry each, no sets, never added to the exercise catalog.
+    const cardioItems = cardio ? ACTIVITIES.map((a) => ({ key: `cardio:${a.key}`, name: a.name, primary: [], equipment: null, cardio: true })) : [];
 
     const input = h('input', {
       type: 'search', id: 'picker-q', class: 'picker-input', placeholder: `Search ${all.length} exercises`,
@@ -87,6 +90,7 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
         const favs = all.filter((it) => it.record?.favourite).sort((a, b) => a.name.localeCompare(b.name));
         const recent = all.filter((it) => lastDate(it)).sort((a, b) => (lastDate(a) < lastDate(b) ? 1 : -1)).slice(0, 10);
         const rest = all.filter((it) => !it.record?.favourite).sort((a, b) => a.name.localeCompare(b.name));
+        if (cardioItems.length) sections.push({ title: 'Cardio', rows: cardioItems });
         if (favs.length) sections.push({ title: 'Favourites', rows: favs });
         if (recent.length) sections.push({ title: 'Recent', rows: recent });
         sections.push({ title: 'All exercises', rows: rest, limited: true });
@@ -101,6 +105,8 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
         };
         const rows = all.filter(matches).map((it) => ({ it, r: q ? rank(it) : 0 })).filter((x) => x.r >= 0)
           .sort((a, b) => a.r - b.r || (lastDate(b.it) > lastDate(a.it) ? 1 : -1) || a.it.name.localeCompare(b.it.name)).map((x) => x.it);
+        const cardioHits = !muscle && !equipment ? cardioItems.filter((it) => words.every((w) => it.name.toLowerCase().includes(w) || 'cardio'.includes(w))) : [];
+        if (cardioHits.length) sections.push({ title: 'Cardio', rows: cardioHits });
         sections.push({ title: `${rows.length} result${rows.length === 1 ? '' : 's'}`, rows, limited: true });
       }
       draw(sections, q);
@@ -130,7 +136,7 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
     function row(it, i) {
       const added = present.has(it.key) || (it.alias && present.has(it.alias.toLowerCase()));
       const last = !added ? lastFor(it.key) : null;
-      const meta = [it.primary[0] ?? (it.record?.needsMuscle ? 'Muscle not set' : 'No muscle set'), it.equipment ? equipmentLabel(it.equipment) : null, it.record?.custom ? 'Custom' : null].filter(Boolean).join(', ');
+      const meta = it.cardio ? 'Cardio: time, plus distance or speed if you like' : [it.primary[0] ?? (it.record?.needsMuscle ? 'Muscle not set' : 'No muscle set'), it.equipment ? equipmentLabel(it.equipment) : null, it.record?.custom ? 'Custom' : null].filter(Boolean).join(', ');
       const star = h('button', {
         type: 'button', class: 'icon-btn subtle star', 'aria-pressed': String(!!it.record?.favourite),
         'aria-label': `${it.record?.favourite ? 'Remove' : 'Add'} ${exName(it.name)} ${it.record?.favourite ? 'from' : 'to'} favourites`,
@@ -151,7 +157,7 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
         h('span', { class: 'opt-meta' }, added ? 'Already added' : meta),
         it.alias && !added ? h('span', { class: 'opt-last' }, `You log it as ${it.alias}`) : null,
         last ? h('span', { class: 'opt-last num' }, `Last ${formatShort(last.date)}: ${formatSets(last.sets, true)}`) : null),
-      star);
+      it.cardio ? null : star);
       opt.addEventListener('pointerdown', (e) => { if (!e.target.closest('.star')) e.preventDefault(); });
       opt.addEventListener('click', (e) => { if (!e.target.closest('.star') && !added) choose(it); });
       return opt;
@@ -167,6 +173,7 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
     }
 
     async function choose(it) {
+      if (it.cardio) { result = it.name; dlg.close(); return; }
       if (it.alias) { result = it.alias; dlg.close(); return; } // your own name for this library exercise
       if (it.entry && !it.record) await store.addLibraryExercise(it.entry);
       else await store.ensureExercise(it.name);

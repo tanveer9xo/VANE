@@ -49,3 +49,12 @@ export function stepForUnits(stepKg, u) {
   const i = from.findIndex((c) => Math.abs(c.kg - stepKg) < 1e-3);
   return to[i >= 0 ? i : 1].kg;
 }
+
+// Cardio distance and speed: km and km/h, or miles and mph with lb. Stored in km and km/h.
+export const KM_PER_MI = 1.609344;
+export const dUnit = () => (current === 'lb' ? 'mi' : 'km');
+export const spUnit = () => (current === 'lb' ? 'mph' : 'km/h');
+export const toShownD = (km) => (km == null ? null : current === 'lb' ? km / KM_PER_MI : km);
+export const fromShownD = (v) => (v == null ? null : current === 'lb' ? round(v * KM_PER_MI, 3) : round(v, 3));
+export const fmtD = (km, dp = 2) => fmt(toShownD(km), dp);
+export const fmtSp = (kmh, dp = 1) => fmt(toShownD(kmh), dp);

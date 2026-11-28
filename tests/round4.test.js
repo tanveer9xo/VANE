@@ -150,12 +150,12 @@ test('CSV: one row per set, plus rest days and skip reasons; quoted and formula-
     S('2026-11-18', 'Break', []),
   ], { '2026-11-19': 'Busy', '2026-11-17': 'Tired' }); // the 17th has a workout, so its reason isn't a skip row
   const lines = csv.trimEnd().split('\r\n');
-  assert.equal(lines[0], 'date,session type,exercise,set number,weight,reps,set type,done,record,skip reason,primary muscle,secondary muscles,equipment,custom,site,value');
-  assert.equal(lines[1], '2026-11-16,Push,"\'=HYPERLINK(""x"")",1,0,10,warmup,yes,set,,,,,,,');
-  assert.equal(lines[2], '2026-11-17,Pull,"Row, cable",1,50,8,working,yes,set,,,,,,,');
-  assert.equal(lines[3], '2026-11-17,Pull,"Row, cable",2,,,working,no,set,,,,,,,');
-  assert.equal(lines[4], '2026-11-18,Break,,,,,,,rest day,,,,,,,');
-  assert.equal(lines[5], '2026-11-19,,,,,,,,skipped,Busy,,,,,,');
+  assert.equal(lines[0], 'date,session type,exercise,set number,weight,reps,set type,done,record,skip reason,primary muscle,secondary muscles,equipment,custom,site,value,minutes,distance km,speed km/h,incline %,calories');
+  assert.equal(lines[1], '2026-11-16,Push,"\'=HYPERLINK(""x"")",1,0,10,warmup,yes,set,,,,,,,,,,,,');
+  assert.equal(lines[2], '2026-11-17,Pull,"Row, cable",1,50,8,working,yes,set,,,,,,,,,,,,');
+  assert.equal(lines[3], '2026-11-17,Pull,"Row, cable",2,,,working,no,set,,,,,,,,,,,,');
+  assert.equal(lines[4], '2026-11-18,Break,,,,,,,rest day,,,,,,,,,,,,');
+  assert.equal(lines[5], '2026-11-19,,,,,,,,skipped,Busy,,,,,,,,,,,');
   assert.equal(lines.length, 6);
   assert.equal(csvField('-5'), "'-5");
   assert.equal(csvField(-5), '-5'); // numbers are left alone

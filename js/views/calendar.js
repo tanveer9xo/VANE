@@ -6,15 +6,16 @@ import { typeName, typeShort, typeColor } from '../types.js';
 import { dayStatus, weekProgress, progressState, currentStreak } from '../plan.js';
 import { monthStats } from '../consistency.js';
 import { weeklyReview } from '../review.js';
-import { fmtInt } from '../stats.js';
+import { fmtInt, fmtNum } from '../stats.js';
 import {
   todayISO, monthOf, monthKey, parseMonthKey, addMonths, monthGrid, formatMonthTitle, weekdayLabels, formatLong,
   startOfWeek, addDays, formatShort,
 } from '../dates.js';
-import { install, isStandalone, isIOS, promptInstall } from '../pwa.js';
+import { installState, installButton } from '../pwa.js';
 import { openMusclePrompt } from './bodymap.js';
 import { fmtWU, fmtLU, shownVolume, wUnit } from '../units.js';
 import { reviewFocus } from '../profile.js';
+import { cardioTotals } from '../cardio.js';
 
 const STATE_WORDS = {
   done: 'completed', rest: 'rest day logged', break: 'break day', planned: 'planned', missed: 'missed', none: '',
@@ -33,6 +34,9 @@ function describe(st) {
   if (st.state === 'rest' || st.state === 'break') return `, ${STATE_WORDS[st.state]}`;
   return `, ${STATE_WORDS[st.state]}: ${typeName(st.type)}${st.fromSession && st.sched && st.sched !== st.type ? ` (changed from ${typeName(st.sched)})` : ''}`;
 }
+
+/** A day with a cardio entry (part of that day's one session): a small badge on its cell. */
+const hasCardio = (iso) => (sessionOn(iso)?.exercises ?? []).some((e) => e.kind === 'cardio');
 
 /** Plate + short name for a day's status, or null. */
 function marker(st, withLabel = true) {
@@ -78,12 +82,13 @@ export function renderCalendar(root, monthArg) {
     return h('a', {
       class: cls,
       href: `#/day/${iso}`,
-      'aria-label': `${formatLong(iso)}${iso === today ? ' (today)' : ''}${describe(st)}${weighed ? (weighed.weight != null ? `, weigh-in ${fmtWU(weighed.weight)}` : ', measurements logged') : ''}`,
+      'aria-label': `${formatLong(iso)}${iso === today ? ' (today)' : ''}${describe(st)}${hasCardio(iso) ? ', with cardio' : ''}${weighed ? (weighed.weight != null ? `, weigh-in ${fmtWU(weighed.weight)}` : ', measurements logged') : ''}`,
       'aria-current': iso === today ? 'date' : null,
     },
     h('span', { class: 'cal-num num' }, day),
     marker(st), // plate + short name: colour is never the only cue
-    weighed ? h('span', { class: 'cal-body', title: 'Body log entry' }) : null);
+    weighed ? h('span', { class: 'cal-body', title: 'Body log entry' }) : null,
+    hasCardio(iso) ? h('span', { class: 'cal-cardio', title: 'Cardio' }, icon('run')) : null);
   });
 
   const grid = h('div', { class: 'cal-grid' }, cells);
@@ -166,11 +171,13 @@ function todayActions(today, schedule) {
 
 function weekStrip(today, weekStartsOn) {
   const wk = weekProgress(sessionOn, store.state.schedule, today, weekStartsOn);
+  const cardioMin = cardioTotals(store.allSessions(), startOfWeek(today, weekStartsOn), today).minutes;
   const names = weekdayLabels(weekStartsOn);
   return h('section', { class: 'week-strip', 'aria-labelledby': 'week-h' },
     h('div', { class: 'section-head' },
       h('h2', { id: 'week-h' }, 'This week'),
-      h('span', { class: 'week-count' }, h('strong', { class: 'num' }, `${wk.completed} of ${wk.planned}`), ' done')),
+      h('span', { class: 'week-count' }, h('strong', { class: 'num' }, `${wk.completed} of ${wk.planned}`), ' done',
+        cardioMin ? h('span', { class: 'week-cardio', id: 'week-cardio' }, ' · ', h('strong', { class: 'num' }, fmtNum(cardioMin, 1)), ' min cardio') : null)),
     h('ol', { class: 'week-days' }, wk.days.map((d, i) => {
       const slug = d.type ? typeColor(d.type) : 'none';
       return h('li', {},
@@ -275,22 +282,18 @@ function backupNudge() {
   return el;
 }
 
+/** One-time, dismissible "Install VANE" card (dismissal remembered). Nothing once installed or if the browser can't. */
 function installBanner() {
   let dismissed = false;
-  try { dismissed = localStorage.getItem('installBannerDismissed') === '1'; } catch { /* storage blocked */ }
-  if (dismissed || isStandalone()) return null;
-  const canPrompt = !!install.prompt;
-  if (!canPrompt && !isIOS()) return null;
-
-  const banner = h('aside', { class: 'banner', 'aria-label': 'Install app' },
+  try { dismissed = localStorage.getItem('installBannerDismissed') === '1'; } catch { /* storage blocked: show it */ }
+  const st = installState();
+  if (dismissed || (st !== 'prompt' && st !== 'ios')) return null;
+  const banner = h('aside', { class: 'banner install-card', id: 'install-card', 'aria-label': 'Install VANE' },
     h('span', { class: 'banner-ic' }, icon('phone')),
-    h('p', {}, canPrompt
-      ? 'Install the app for offline use and a full screen.'
-      : 'Install: tap Share, then “Add to Home Screen”.'),
-    canPrompt ? h('button', { class: 'btn small accent', onclick: async () => { await promptInstall(); banner.remove(); } }, 'Install') : null,
+    h('p', {}, st === 'ios' ? 'Add VANE to your home screen: full screen, offline, one tap away.' : 'Install VANE: full screen, offline, one tap away.'),
+    installButton('btn small accent'),
     h('button', {
-      class: 'icon-btn small',
-      'aria-label': 'Dismiss',
+      class: 'icon-btn small', 'aria-label': 'Dismiss: don’t show again',
       onclick: () => {
         try { localStorage.setItem('installBannerDismissed', '1'); } catch { /* ignore */ }
         banner.remove();

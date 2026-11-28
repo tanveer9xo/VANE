@@ -75,15 +75,29 @@ await ev(`import('./js/store.js').then(async (m) => {
   await m.saveBodyEntry({ date: ${JSON.stringify(TODAY)}, weight: 80.5, chest: 101, bodyFat: 18 });
   const s = await m.createSession(${JSON.stringify(TODAY)}, 'Push');
   s.notes = 'saved before the update';
+  const { newCardioExercise } = await import('./js/cardio.js');
+  s.exercises.push(newCardioExercise('Treadmill', 'cardio-1'));
   await m.saveNow(s);
   localStorage.setItem('appearance', 'dark');
   return true;
 })`);
+// Someone else's things on the same origin (on github.io every site of the account shares it): never touched.
+await ev(`(async () => {
+  await (await caches.open('another-site-cache')).put('/another/x', new Response('theirs'));
+  await new Promise((ok, no) => { const r = indexedDB.open('another-site-db', 1); r.onupgradeneeded = () => r.result.createObjectStore('s').put('theirs', 'k'); r.onsuccess = () => { r.result.close(); ok(); }; r.onerror = no; });
+  localStorage.setItem('another-site-key', 'theirs');
+  return true;
+})()`);
+const rawBefore = JSON.parse(await ev(`import('./js/db.js').then(async (db) => JSON.stringify(await db.readAll()))`));
 const before = await ev(`import('./js/store.js').then((m) => JSON.stringify({ body: m.bodyEntries(), sessions: m.allSessions().length, profile: m.state.profile.name, sites: m.state.settings.measureSites }))`);
 check(!(await ev(`!!document.getElementById('update-banner')`)), 'no update banner while nothing new is out');
 
 // ---- the server gets a new version ----
-for (const [file, from, to] of [['sw.js', `VERSION = '${OLD}'`, `VERSION = '${NEXT}'`], ['js/model.js', `APP_VERSION = '${OLD}'`, `APP_VERSION = '${NEXT}'`]]) {
+// …and this update also changes the data format (11 → 12), so it migrates the stored data on reload.
+const SCHEMA_OLD = Number(readFileSync(join(SITE, 'sw.js'), 'utf8').match(/const SCHEMA = (\d+);/)[1]);
+const SCHEMA_NEW = SCHEMA_OLD + 1;
+for (const [file, from, to] of [['sw.js', `VERSION = '${OLD}'`, `VERSION = '${NEXT}'`], ['js/model.js', `APP_VERSION = '${OLD}'`, `APP_VERSION = '${NEXT}'`],
+  ['sw.js', `const SCHEMA = ${SCHEMA_OLD};`, `const SCHEMA = ${SCHEMA_NEW};`], ['js/model.js', `SCHEMA_VERSION = ${SCHEMA_OLD};`, `SCHEMA_VERSION = ${SCHEMA_NEW};`]]) {
   const p = join(SITE, file);
   writeFileSync(p, readFileSync(p, 'utf8').replace(from, to));
 }
@@ -93,13 +107,19 @@ await ev(`[...document.querySelectorAll('#about button')].find((b) => b.textCont
 check(await waitFor(`!!document.getElementById('update-banner')`), 'Check for updates finds the new version: the banner appears');
 check(await ev(`(()=>{const b=document.getElementById('update-banner'); return b.textContent.includes('Update ready. Tap to refresh') && b.getAttribute('role') === 'status' && !b.closest('#toasts') && ![...document.querySelectorAll('#toasts .toast')].some((t) => /update/i.test(t.textContent) && !/banner/.test(t.textContent))})()`), 'it is a banner (“Update ready. Tap to refresh”), not a toast');
 check(await ev(`(()=>{const b=document.getElementById('update-banner').getBoundingClientRect(); const m=document.getElementById('view').getBoundingClientRect(); return b.top >= 0 && b.bottom <= m.top + 1})()`), 'the banner sits above the page content, not over it');
+check(await waitFor(`!document.querySelector('#update-banner .update-data').hidden`, 4000) && /Export a backup before updating/.test(await ev(`document.querySelector('#update-banner .update-data').textContent`)) && (await ev(`!!document.querySelector('#update-banner #update-export')`)),
+  'this update changes the data format: the banner says to export a backup first, with an Export button');
 await ev(`document.querySelector('#update-banner .update-x').click(); true`);
 await sleep(200);
 check(!(await ev(`!!document.getElementById('update-banner')`)), 'Dismiss hides it');
 await ev(`[...document.querySelectorAll('#about button')].find((b) => b.textContent.includes('Check for updates')).click(); true`);
 check(await waitFor(`!!document.getElementById('update-banner')`, 5000), 'Check for updates brings it back');
 
-// An edit still waiting to be saved (autosave delay) when the banner is tapped.
+// A workout in progress: on the Day screen, a time typed into the cardio card a moment before tapping Update,
+// plus an edit still waiting in the autosave delay.
+await ev(`location.hash = ${JSON.stringify(`#/day/${TODAY}`)}; true`);
+await sleep(600);
+await ev(`(() => { const i = document.querySelector('.cardio-card [data-fkey$=":min"]'); i.focus(); i.value = '33'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
 await ev(`import('./js/store.js').then((m) => { const s = m.getSession(${JSON.stringify(TODAY)}); s.notes = 'typed just before tapping Update'; m.scheduleSave(s, 60000); return true; })`);
 await ev(`document.querySelector('#update-banner .update-go').click(); true`);
 await sleep(1000);
@@ -107,9 +127,19 @@ check(await waitFor(`document.readyState === 'complete' && !!document.querySelec
 await sleep(1200);
 
 // ---- after the update ----
+check((await ev('location.hash')) === `#/day/${TODAY}` && (await ev(`document.querySelector('.cardio-card [data-fkey$=":min"]')?.value`)) === '33', 'the reload comes back to the same screen, with the workout in progress as it was');
+const rawAfter = JSON.parse(await ev(`import('./js/db.js').then(async (db) => JSON.stringify(await db.readAll()))`));
+const snaps = await ev(`import('./js/db.js').then(async (db) => (await db.getSnapshots()).map((x) => [x.fromVersion, x.toVersion, x.data.sessions.length]))`);
+check(rawAfter.meta.schemaVersion === SCHEMA_NEW && JSON.stringify(snaps) === JSON.stringify([[SCHEMA_OLD, SCHEMA_NEW, rawBefore.sessions.length]]), `the update's data change took a snapshot first, then migrated (${JSON.stringify(snaps)})`);
+const sets = (x) => JSON.stringify(x.sessions.map((q) => [q.date, q.type, q.exercises.map((e) => [e.name, e.sets.length, e.kind ?? null])]));
+check(sets(rawAfter) === sets(rawBefore) && JSON.stringify(rawAfter.body) === JSON.stringify(rawBefore.body) && JSON.stringify(rawAfter.meta.sessionTypes) === JSON.stringify(rawBefore.meta.sessionTypes),
+  'workouts, Body log and types are all still there after the migration');
+check(await ev(`(async () => (await caches.keys()).includes('another-site-cache') && (await (await (await caches.open('another-site-cache')).match('/another/x')).text()) === 'theirs')()`), 'another site’s cache on the same origin is untouched');
+check(await ev(`new Promise((ok) => { const r = indexedDB.open('another-site-db'); r.onsuccess = () => { const g = r.result.transaction('s').objectStore('s').get('k'); g.onsuccess = () => { r.result.close(); ok(g.result === 'theirs'); }; }; r.onerror = () => ok(false); })`), 'another IndexedDB database on the same origin is untouched');
+check((await ev(`localStorage.getItem('another-site-key')`)) === 'theirs', 'localStorage is untouched');
 await go('#/settings');
 check((await ev(`document.querySelector('#about .about-version')?.textContent`)) === `Version ${NEXT}`, `now running ${NEXT}`);
-check((await ev(`caches.keys()`)).join(',') === `workout-tracker-${NEXT}`, `the old file cache is gone, the new one in place (${(await ev('caches.keys()')).join(', ')})`);
+check(await ev(`caches.keys().then((k) => k.includes('workout-tracker-${NEXT}') && !k.includes('workout-tracker-${OLD}'))`), `only this app's old file cache is gone, the new one in place (${(await ev('caches.keys()')).join(', ')})`);
 check(!(await ev(`!!document.getElementById('update-banner')`)), 'no banner after updating');
 const after = await ev(`import('./js/store.js').then((m) => JSON.stringify({ body: m.bodyEntries(), sessions: m.allSessions().length, profile: m.state.profile.name, sites: m.state.settings.measureSites }))`);
 check(after === before, 'every stored record survived: Body log, workouts, profile and settings');

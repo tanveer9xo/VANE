@@ -3,10 +3,11 @@
 //   #/progress[/deadlift]   #/progress/~records   #/progress/~body[/2026-11-19]   #/settings[/backup]
 //   #/body (1.3 link) → #/progress/~body     #/welcome/1…5 first-run flow     #/settings/profile
 import * as store from './store.js';
-import { h, clearActionToasts } from './ui.js';
-import { isValidISODate } from './dates.js';
+import { SCHEMA_VERSION } from './model.js';
+import { h, icon, clearActionToasts } from './ui.js';
+import { isValidISODate, todayISO } from './dates.js';
 import { parseRoute as parseHash } from './routes.js';
-import { registerServiceWorker, requestPersistence } from './pwa.js';
+import { registerServiceWorker, requestPersistence, checkForUpdate, showUpdateBanner, install } from './pwa.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderDay } from './views/day.js';
 import { renderProgress } from './views/progress.js';
@@ -85,6 +86,48 @@ function endSplash() {
   document.getElementById('splash')?.remove();
 }
 
+/** A JSON backup of everything, as a download (the update banner's "Export backup"). */
+async function exportJSON() {
+  await store.flushAll();
+  const file = new File([JSON.stringify(store.exportPayload(), null, 1)], `workout-backup-${todayISO()}.json`, { type: 'application/json' });
+  const a = h('a', { href: URL.createObjectURL(file), download: file.name });
+  document.body.append(a); a.click(); a.remove();
+  await store.markExported();
+}
+
+/** The screen shown instead of the app when the data can't be opened safely. Nothing on it writes data. */
+function blockedView(b) {
+  if (b.kind === 'newer') {
+    return h('section', { class: 'card blocked', id: 'blocked', 'aria-labelledby': 'blocked-h' },
+      h('h1', { id: 'blocked-h', tabindex: '-1' }, 'Update VANE to open this data'),
+      h('p', {}, `The data on this phone was saved by a newer version of VANE (data format ${b.stored}). This copy of the app is older (format ${SCHEMA_VERSION}), so it won’t open or change that data.`),
+      h('p', {}, 'Updating fixes it. Your data is safe and untouched.'),
+      h('button', {
+        class: 'btn primary block', id: 'blocked-update',
+        onclick: async () => {
+          const r = await checkForUpdate();
+          if (r === 'ready') showUpdateBanner();
+          else if (r === 'none' || r === 'unsupported') location.reload();
+        },
+      }, icon('refresh'), 'Update now'));
+  }
+  return h('section', { class: 'card blocked', id: 'blocked', 'aria-labelledby': 'blocked-h' },
+    h('h1', { id: 'blocked-h', tabindex: '-1' }, 'VANE couldn’t update your data'),
+    h('p', {}, `This version needed to update how your data is stored (format ${b.stored} → ${SCHEMA_VERSION}), and a check found a problem, so nothing was changed. Your data is exactly as it was before.`),
+    h('p', { class: 'fine' }, b.message),
+    b.snapshotId ? h('button', {
+      class: 'btn primary block', id: 'blocked-export',
+      onclick: async () => {
+        const data = await store.snapshotBackup(b.snapshotId);
+        const file = new File([JSON.stringify(data, null, 1)], `vane-snapshot-${todayISO()}.json`, { type: 'application/json' });
+        const a = h('a', { href: URL.createObjectURL(file), download: file.name });
+        document.body.append(a); a.click(); a.remove();
+      },
+    }, icon('download'), 'Export a backup of your data') : null,
+    h('p', { class: 'fine' }, 'Keep that file safe. An update to VANE will try again; you can also import the file on another device.'),
+    h('button', { class: 'btn block', onclick: () => location.reload() }, 'Try again'));
+}
+
 async function boot() {
   try {
     await store.init();
@@ -95,6 +138,16 @@ async function boot() {
       h('p', {}, err.message || String(err)),
       h('p', { class: 'muted' }, 'Private/incognito mode can block on-device storage. Open the app normally and try again.')));
     endSplash();
+    return;
+  }
+  // The data couldn't be opened safely: show why, offer what helps, and change nothing.
+  if (store.state.blocked) {
+    document.body.classList.add('onboarding'); // no tab bar: nothing else can run
+    main.replaceChildren(blockedView(store.state.blocked));
+    main.querySelector('h1')?.focus();
+    endSplash();
+    registerServiceWorker({ onBeforeUpdate: async () => {} }); // so the update that fixes it can arrive
+    if (store.state.blocked.kind === 'newer') checkForUpdate().then((r) => { if (r === 'ready') showUpdateBanner(); });
     return;
   }
   // The device copy (applied before first paint) wins; a restored backup's choice is used on a fresh device.
@@ -124,7 +177,9 @@ async function boot() {
     if (!isField(document.activeElement)) document.body.classList.remove('typing');
   }, 50));
 
-  registerServiceWorker({ onBeforeUpdate: () => store.flushAll() }); // an update never loses an edit in progress
+  registerServiceWorker({ onBeforeUpdate: () => store.flushAll(), onExport: exportJSON }); // an update never loses an edit in progress
+  // Installing (or the browser offering to) changes what Settings and the Calendar show.
+  install.listeners.add(() => { if (['cal', 'settings'].includes(parseRoute().name)) window.dispatchEvent(new HashChangeEvent('hashchange')); });
   requestPersistence();
 }
 

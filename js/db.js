@@ -1,6 +1,6 @@
 // Thin promise wrapper over IndexedDB.
 const DB_NAME = 'workout-tracker';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 let dbPromise = null;
 
@@ -14,7 +14,10 @@ function upgrade(db, oldVersion) {
   if (oldVersion < 2) {
     db.createObjectStore('body', { keyPath: 'date' }); // bodyweight/waist log, one entry per date
   }
-  // if (oldVersion < 3) { … }
+  if (oldVersion < 3) {
+    db.createObjectStore('snapshots', { keyPath: 'id' }); // copies of all data taken before a data migration
+  }
+  // if (oldVersion < 4) { … }   Adding a store never touches existing data.
 }
 
 export function open() {
@@ -76,3 +79,41 @@ export async function getMeta(key) {
   return (await get('meta', key))?.value;
 }
 export const setMeta = (key, value) => put('meta', { key, value });
+
+export const DATA_STORES = ['sessions', 'exercises', 'meta', 'body'];
+
+/** Every record of every data store, in one read transaction. → { sessions, exercises, body, meta: { key: value } } */
+export async function readAll() {
+  const db = await open();
+  const tx = db.transaction(DATA_STORES);
+  const [sessions, exercises, meta, body] = await Promise.all(DATA_STORES.map((n) => request(tx.objectStore(n).getAll())));
+  return { sessions, exercises, body, meta: Object.fromEntries(meta.map((r) => [r.key, r.value])) };
+}
+
+/** Save a snapshot and keep only the newest `keep`. Resolves to the snapshot id. */
+export function saveSnapshot(snapshot, keep) {
+  return run('snapshots', 'readwrite', (tx) => {
+    const os = tx.objectStore('snapshots');
+    os.put(snapshot);
+    const req = os.getAllKeys();
+    req.onsuccess = () => {
+      const ids = req.result.sort((a, b) => a - b);
+      ids.slice(0, Math.max(0, ids.length - keep)).forEach((id) => os.delete(id));
+    };
+    return snapshot.id;
+  });
+}
+export const getSnapshots = async () => (await getAll('snapshots')).sort((a, b) => b.id - a.id);
+
+/**
+ * Write a migration in ONE transaction: sessions to put and meta keys to set. If anything fails the transaction
+ * aborts and nothing is written (the old data stays as it was).
+ */
+export function writeMigration({ sessions = [], meta = {} }) {
+  return run(['sessions', 'meta'], 'readwrite', (tx) => {
+    const ss = tx.objectStore('sessions');
+    const ms = tx.objectStore('meta');
+    sessions.forEach((s) => ss.put(s));
+    Object.entries(meta).forEach(([key, value]) => ms.put({ key, value }));
+  });
+}

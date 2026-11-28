@@ -1,6 +1,7 @@
 // Weekly plan logic: what's scheduled on a date, building a day from a template, day status, week progress.
 // Pure functions — no DOM, no storage.
 import { BREAK, WEEKDAY_KEYS, isTrainingType, exerciseKey, uid, newSession, cleanNote } from './model.js';
+import { newCardioExercise } from './cardio.js';
 import { parseISODate, addDays, startOfWeek } from './dates.js';
 import { lastLoggedSets, isCompleteSet, isLoggedSet } from './stats.js';
 
@@ -74,8 +75,9 @@ export function lastNoteFor(sessions, key, date, today) {
  */
 export function copySessionTo(source, date, sessions, settings, today) {
   const s = newSession(date, settings, source.type);
-  s.cardioMinutes = source.cardioMinutes ?? s.cardioMinutes;
   s.exercises = source.exercises.map((ex) => {
+    // A cardio entry is copied as an empty one to fill in on the day.
+    if (ex.kind === 'cardio') return newCardioExercise(ex.name, uid());
     const workingCount = Math.max(1, ex.sets.filter((x) => x.type !== 'warmup').length);
     const item = { ...(ex.target ?? {}), sets: workingCount, weightStep: ex.weightStep, restSeconds: ex.restSeconds };
     const planned = plannedExercise(ex.name, item, sessions, date, today);
@@ -109,13 +111,12 @@ export const restSecondsFor = (ex, settings) => ex.restSeconds ?? settings.defau
 export const weightStepFor = (ex, settings) => ex.weightStep ?? settings.weightStep ?? 2.5;
 
 /**
- * A training day counts as completed once at least one working set is done, Cardio minutes are
- * logged on a Cardio day, or the workout was finished from its summary sheet.
+ * A training day counts as completed once at least one working set is done, a cardio entry is marked
+ * Done, or the workout was finished from its summary sheet. (Cardio is part of the day: still one session.)
  */
 export function isCompleted(session) {
   if (!session || session.type === BREAK) return false;
-  return !!session.finishedAt || session.exercises.some((e) => e.sets.some(isCompleteSet))
-    || (session.type === 'Cardio' && session.cardioMinutes > 0);
+  return !!session.finishedAt || session.exercises.some((e) => e.sets.some(isCompleteSet) || (e.kind === 'cardio' && e.cardio?.done));
 }
 
 /**

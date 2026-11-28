@@ -10,7 +10,8 @@ import { sessionsToCSV, csvToBackup } from '../js/csv.js';
 
 test('the sites, and which are tracked by default', () => {
   assert.deepEqual(SITES.map((s) => s.key), ['neck', 'shoulders', 'chest', 'armL', 'armR', 'forearm', 'waist', 'hips', 'thighL', 'thighR', 'calf']);
-  assert.deepEqual(DEFAULT_TRACKED, ['chest', 'waist', 'hips', 'upperArm', 'thigh']);
+  assert.deepEqual(DEFAULT_TRACKED, ['chest', 'upperArm', 'waist', 'hips', 'thigh']);
+  assert.deepEqual(normalizeTracked(DEFAULT_TRACKED), DEFAULT_TRACKED, 'already in body order, so a backup round trip keeps it');
   assert.deepEqual(trackedSites(DEFAULT_TRACKED).map((s) => s.key), ['chest', 'armL', 'armR', 'waist', 'hips', 'thighL', 'thighR']);
   assert.ok(GROUPS.find((g) => g.id === 'bodyFat').label.includes('your own estimate'));
   assert.deepEqual(DEFAULT_SETTINGS.measureSites, DEFAULT_TRACKED);

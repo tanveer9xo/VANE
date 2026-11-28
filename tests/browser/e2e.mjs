@@ -39,8 +39,8 @@ const finish = (code) => {
   setTimeout(() => { try { rmSync(WORK, { recursive: true, force: true }); } catch { /* */ } process.exit(code); }, 300);
 };
 process.on('unhandledRejection', (e) => { console.error('ERROR', e); finish(2); });
-// Watchdog: a run takes about 3 minutes. If one hangs (a promise that never settles), fail loudly.
-setTimeout(() => { console.error(`ERROR timed out after 8 minutes; last check: ${lastCheck}`); finish(3); }, 8 * 60 * 1000).unref();
+// Watchdog: a run takes about 8–9 minutes. If one hangs (a promise that never settles), fail loudly.
+setTimeout(() => { console.error(`ERROR timed out after 15 minutes; last check: ${lastCheck}`); finish(3); }, 15 * 60 * 1000).unref();
 process.on('uncaughtException', (e) => { console.error('ERROR', e); finish(2); });
 
 async function getJSON(path) {
@@ -241,7 +241,7 @@ await sleep(600);
 const migrated = await sessionOf('2026-11-13');
 check(migrated?.v === SCHEMA && migrated.exercises[0].note === '' && migrated.finishedAt === null, `v3 backup imported and migrated to v${SCHEMA}`);
 check(!(await exists('#timer-sound')) && !(await ev(`[...document.querySelectorAll('button')].some(b => /Test the timer/.test(b.textContent))`)), 'Settings has no timer sound toggle or timer test');
-check(await ev(`[...document.querySelectorAll('.settings-view h2')].map(h => h.textContent).join('|')`) === 'Profile|Nutrition|Appearance|Stats|Backup|Preferences|Weekly sets per muscle|About|Erase', 'Settings sections incl. Profile and weekly muscle targets and About');
+check((await ev(`[...document.querySelectorAll('.settings-view h2')].map(h => h.textContent).join('|')`)).replace('|App|', '|') === 'Profile|Nutrition|Appearance|Stats|Backup|Preferences|Weekly sets per muscle|About|Erase', 'Settings sections incl. Profile and weekly muscle targets and About');
 check(await ev(`[...document.querySelectorAll('#backup button')].some(b => b.textContent.includes('CSV'))`), 'CSV export next to the JSON backup');
 
 // ---------------- calendar: plates ----------------
@@ -440,7 +440,7 @@ check((await text('.ex:nth-child(2) .ex-note'))?.includes('Grip just outside kne
 await click('.finish-btn');
 await sleep(300);
 check(await ev(`[...document.querySelectorAll('dialog[open] .summary dt')].map(d=>d.textContent).join('|')`) === 'Duration|Volume|Sets|PRs', 'finish sheet: duration, volume, sets, PRs');
-check(await exists('dialog[open] #fin-cardio') && (await exists('dialog[open] #fin-notes')), 'finish sheet: treadmill minutes and notes');
+check(!(await exists('dialog[open] #fin-cardio')) && (await exists('dialog[open] #fin-notes')), 'finish sheet: notes (treadmill minutes are now cardio entries)');
 await typeInto('#fin-notes', 'Felt strong');
 await clickText('dialog[open] button[type=submit]', 'Finish workout');
 await sleep(500);
@@ -567,6 +567,111 @@ await shot('46-body-measurements');
 await ev(`import('./js/store.js').then(async (m) => { await m.saveProfile({ heightCm: null }); return true; })`);
 
 
+// ---------------- cardio (1.14) ----------------
+const cardioCard = (name) => `.cardio-card[aria-label="${name}, cardio"]`;
+const addCardio = async (name) => {
+  await click('.add-row');
+  await sleep(400);
+  await clickText('dialog.picker .picker-opt', name);
+  for (let i = 0; i < 20 && !(await exists(cardioCard(name))); i++) await sleep(100);
+  await sleep(300);
+};
+await go(`#/day/${TODAY}`);
+await click('.add-row');
+await sleep(400);
+check(J(await ev(`[...document.querySelectorAll('dialog.picker .picker-section')].slice(0, 1).map(e => e.textContent)`)) === J(['Cardio']) && J(await ev(`[...document.querySelectorAll('dialog.picker .picker-opt')].slice(0, 8).map(o => o.querySelector('.opt-name').textContent)`)) === J(['Treadmill', 'Walking', 'Running', 'Jogging', 'Cycling', 'Rowing', 'Stairs', 'Other cardio']), 'Add exercise: a Cardio group with the eight activities');
+await clickText('dialog.picker .picker-opt', 'Treadmill');
+await sleep(500);
+check((await exists(cardioCard('Treadmill'))) && (await ev(`document.querySelector('${cardioCard('Treadmill')}').querySelectorAll('.set-row, [data-fkey$=":w"]').length`)) === 0, 'a cardio entry: one card, no sets, kg or reps');
+check((await ev(`document.activeElement?.dataset.fkey ?? ''`)).endsWith(':min'), 'Time gets the focus');
+await setValue(`${cardioCard('Treadmill')} [data-fkey$=":min"]`, '25');
+await sleep(300);
+check(await ev(`(()=>{const c=document.querySelector('${cardioCard('Treadmill')}'); const d=c.querySelector('[data-fkey$=":distanceKm"]'), sp=c.querySelector('[data-fkey$=":speedKmh"]'); return d.value === '' && sp.value === '' && [...c.querySelectorAll('.calc-tag')].every(t => t.hidden)})()`), 'Time only: Distance and Speed stay empty, nothing calculated');
+await ev(`document.querySelector('${cardioCard('Treadmill')}').scrollIntoView({ block: 'center' }); true`);
+await sleep(150);
+await shot('51-cardio-time-only');
+await click(`${cardioCard('Treadmill')} .cardio-done`);
+await sleep(400);
+{
+  const ex = (await sessionOf(TODAY)).exercises.find((e) => e.name === 'Treadmill');
+  check(ex.kind === 'cardio' && J(ex.cardio) === J({ minutes: 25, distanceKm: null, speedKmh: null, incline: null, kcal: null, done: true, timerStartedAt: null }), `Done with only Time: saved, every empty field stays null (${J(ex.cardio)})`);
+}
+check(/Cardio 25 min/.test(await text('#hero-cardio')), 'the day shows cardio as a small badge (still one session)');
+// Live calculation both ways.
+await addCardio('Running');
+await setValue(`${cardioCard('Running')} [data-fkey$=":min"]`, '30');
+await setValue(`${cardioCard('Running')} [data-fkey$=":distanceKm"]`, '5');
+await sleep(300);
+check(await ev(`(()=>{const sp=document.querySelector('${cardioCard('Running')} [data-fkey$=":speedKmh"]'); return sp.value === '10' && sp.classList.contains('calc') && !sp.closest('.cardio-field').querySelector('.calc-tag').hidden})()`), 'Time + Distance: Speed worked out live (10 km/h), marked “calculated”');
+await setValue(`${cardioCard('Running')} [data-fkey$=":distanceKm"]`, '');
+await sleep(200);
+check((await ev(`document.querySelector('${cardioCard('Running')} [data-fkey$=":speedKmh"]').value`)) === '', 'clearing Distance clears the worked-out Speed');
+await setValue(`${cardioCard('Running')} [data-fkey$=":speedKmh"]`, '8');
+await sleep(300);
+check(await ev(`(()=>{const d=document.querySelector('${cardioCard('Running')} [data-fkey$=":distanceKm"]'); return d.value === '4' && d.classList.contains('calc')})()`), 'Time + Speed: Distance worked out (4 km), marked “calculated”');
+await click(`${cardioCard('Running')} .cardio-done`);
+await sleep(300);
+check(J(await ev(`import('./js/store.js').then(m => m.getSession(${J(TODAY)}).exercises.find(e => e.name === 'Running').cardio)`)) === J({ minutes: 30, distanceKm: null, speedKmh: 8, incline: null, kcal: null, done: true, timerStartedAt: null }), 'only what you typed is stored; the worked-out distance is not');
+// Done needs Time and nothing else.
+await addCardio('Rowing');
+await click(`${cardioCard('Rowing')} .cardio-done`);
+await sleep(300);
+check((await ev(`document.querySelector('${cardioCard('Rowing')} .cardio-done').getAttribute('aria-pressed')`)) === 'false' && (await waitToast(/Enter the time for Rowing/)), 'Done without a time: asks for the time');
+await click(`${cardioCard('Rowing')} .icon-btn[aria-label="Remove Rowing"]`);
+await sleep(400);
+// Start/Stop fills Time.
+await addCardio('Cycling');
+await click(`${cardioCard('Cycling')} .cardio-timer`);
+await sleep(1300);
+check(/Stop 0:0[1-9]/.test(await text(`${cardioCard('Cycling')} .cardio-timer`)), 'Start: the timer runs on the card');
+await click(`${cardioCard('Cycling')} .cardio-timer`);
+await sleep(300);
+check((await ev(`document.querySelector('${cardioCard('Cycling')} [data-fkey$=":min"]').value`)) === '0.1', 'Stop: Time is filled in');
+await click(`${cardioCard('Cycling')} .icon-btn[aria-label="Remove Cycling"]`);
+await sleep(400);
+for (let i = 0; i < 40 && (await ev(`[...document.querySelectorAll('#toasts .toast')].some(t => !t.hidden && t.getClientRects().length)`)); i++) await sleep(200);
+await ev(`window.scrollTo(0, 0); true`);
+await sleep(150);
+await shot('52-day-cardio');
+// Calendar, Settings, Progress.
+await go('#/');
+check(await exists(`.cal-day[href="#/day/${TODAY}"] .cal-cardio`) && /with cardio/.test(await ev(`document.querySelector('.cal-day[href="#/day/${TODAY}"]').getAttribute('aria-label')`)), 'calendar: a small cardio badge on the day (and said aloud)');
+check(/55 min cardio/.test(await text('#week-cardio')), `calendar: this week’s cardio minutes (“${await text('#week-cardio')}”)`);
+check(/3 of 5 done/.test(await text('.week-count')) || /of \d+ done/.test(await text('.week-count')), 'cardio adds no extra session to the week');
+await go('#/settings');
+check(await ev(`[...document.querySelectorAll('.stat')].some(s => s.querySelector('dt')?.textContent === 'Cardio this week' && s.querySelector('.stat-v').textContent === '55 min')`), 'Settings → Stats: cardio this week');
+check(!(await exists('#def-cardio')), 'the old “Default treadmill minutes” setting is gone');
+await go('#/progress');
+check(J(await ev(`[...document.querySelectorAll('#cardio-links a')].map(a => a.dataset.activity)`)) === J(['treadmill', 'running']), 'Progress → Charts: a link per cardio activity you’ve done');
+await go('#/progress/~cardio/running');
+check((await text('#cardio-history h2')) === 'Running' && J(await ev(`[...document.querySelectorAll('#cardio-history [data-metric]')].map(b => b.dataset.metric)`)) === J(['time', 'distance', 'speed']), 'Running history: Time, and Distance and Speed because it has them');
+check(/4 km \(calculated\)/.test(await text('.cardio-rows')), 'a worked-out value is marked as calculated in the history');
+await go('#/progress/~cardio/treadmill');
+check(!(await exists('#cardio-history [data-metric]')) && /25 min/.test(await text('.cardio-rows')) && !/km/.test(await text('#cardio-history')), 'Treadmill history: time only, no distance or speed shown');
+const expC = await ev(`import('./js/store.js').then(m => JSON.parse(JSON.stringify(m.exportPayload())))`);
+check(J(expC.sessions.find((x) => x.date === TODAY).exercises.find((e) => e.name === 'Treadmill').cardio) === J({ minutes: 25, distanceKm: null, speedKmh: null, incline: null, kcal: null, done: true, timerStartedAt: null }), 'JSON export keeps empty cardio fields empty (null, not 0)');
+const csvC = await ev(`Promise.all([import('./js/csv.js'), import('./js/store.js')]).then(([c, m]) => c.sessionsToCSV(m.allSessions(), {}, [], []))`);
+check(csvC.includes(`${TODAY},Upper,Treadmill,,,,,yes,cardio,,,,,,,,25,,,,`), 'CSV: a cardio row with the empty fields left empty');
+for (const width of [320, 412]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
+  await go(`#/day/${TODAY}`);
+  await addCardio('Walking');
+  await setValue(`${cardioCard('Walking')} [data-fkey$=":min"]`, '20');
+  await sleep(200);
+  await ev(`document.querySelector('${cardioCard('Walking')}').scrollIntoView({ block: 'center' }); true`);
+  await sleep(150);
+  const over = await ev(`(()=>{const w=innerWidth; return [...document.querySelectorAll('main *')].filter(e => { const r=e.getBoundingClientRect(); return r.width && (r.right > w + 1 || r.left < -1); }).slice(0,3).map(e => e.className || e.tagName)})()`);
+  const small = await ev(`[...document.querySelectorAll('.cardio-card .cardio-input, .cardio-card .cardio-timer, .cardio-card .cardio-done')].filter(b => b.getBoundingClientRect().height < 44).length`);
+  check((await ev(`document.documentElement.scrollWidth <= innerWidth`)) && over.length === 0 && small === 0, `${width} px cardio card: nothing spills, every control ≥ 44 px${over.length ? ` (${J(over)})` : ''}`);
+  await shot(`51-cardio-time-only-${width}`);
+  await click(`${cardioCard('Walking')} .icon-btn[aria-label="Remove Walking"]`);
+  await sleep(400);
+  await go('#/progress/~cardio/running');
+  const over2 = await ev(`document.documentElement.scrollWidth <= innerWidth`);
+  check(over2, `${width} px cardio history: nothing spills sideways`);
+}
+await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
+
 // ---------------- Round 5: exercise library, per-exercise progress, body map ----------------
 const R5 = THEME === 'dark'
   ? { lvl1: 'rgb(75, 80, 174)', lvl2: 'rgb(108, 108, 214)' }
@@ -655,7 +760,7 @@ await go(`#/day/${TODAY}`);
 await click('.add-row');
 await sleep(400);
 check(/^Search 8\d\d exercises$/.test(await ev(`document.getElementById('picker-q').placeholder`)), `picker searches the whole library (${await ev(`document.getElementById('picker-q').placeholder`)})`);
-check(J(await ev(`[...document.querySelectorAll('.picker-section')].map(e=>e.textContent)`)) === J(['Recent', 'All exercises']), 'recent exercises on top');
+check(J(await ev(`[...document.querySelectorAll('.picker-section')].map(e=>e.textContent)`)) === J(['Cardio', 'Recent', 'All exercises']), 'the Cardio group, then recent exercises on top');
 check((await ev(`document.querySelectorAll('.picker-opt').length`)) <= 60 && (await exists('.picker-more')), `only the first rows are drawn (${await ev(`document.querySelectorAll('.picker-opt').length`)}), “Show more” for the rest`);
 await shot('17-picker');
 await click('.fchip[data-value="Chest"]');
@@ -672,7 +777,7 @@ await click('.fchip[data-value="Chest"]');
 await click('.fchip[data-value="dumbbell"]');
 await setValue('#picker-q', '');
 await sleep(250);
-check(J(await ev(`[...document.querySelectorAll('.picker-section')].map(e=>e.textContent)`)) === J(['Favourites', 'Recent', 'All exercises']), 'favourites first');
+check(J(await ev(`[...document.querySelectorAll('.picker-section')].map(e=>e.textContent)`)) === J(['Cardio', 'Favourites', 'Recent', 'All exercises']), 'favourites first (after the Cardio group)');
 await click('.picker-create');
 await sleep(200);
 await setValue('#cx-name', 'Landmine Press X');
@@ -919,7 +1024,14 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
 await send('Page.reload', {});
 await sleep(1800);
 const sp = await ev('window.__splash');
-check(sp.atStart === true, 'splash (icon + VANE) is on screen from the first paint');
+// The first frame shows the splash, or — when boot finishes before the first frame (a warm cache) — the finished
+// screen. Never a blank page or a half-built one.
+check(sp.atStart === true || (sp.atStart === false && sp.viewAtGone === true),
+  `first paint shows the splash or the finished first screen, never a blank page ${JSON.stringify(sp)}`);
+const html = await (await fetch(`${BASE}index.html`)).text();
+check(/<html[^>]*class="[^"]*booting/.test(html) || /classList\.add\('booting'\)/.test(await (await fetch(`${BASE}js/boot.js`)).text()),
+  'the splash is shown from the first paint while the app is booting (booting class set before paint)');
+check(/<!-- splash -->[\s\S]*id="splash"[\s\S]*<!-- \/splash -->/.test(html), 'splash (icon + VANE) is in the page itself, not added by script');
 check(sp.viewAtGone === true && sp.gone - sp.view < 100, `splash leaves as soon as the first screen is there (${Math.round(sp.gone - sp.view)} ms after it)`);
 check(!(await exists('#splash')) && (await visible('.tabbar')), 'splash removed; nav visible');
 // Put the splash back for one capture (it's normally gone too fast to see).

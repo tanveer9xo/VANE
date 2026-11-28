@@ -4,9 +4,11 @@ import * as store from '../store.js';
 import { exName as exLabel } from '../library.js';
 import { fmtW, fmtWU, parseShownW, shownVolume, wUnit, toShownW, fromShownW } from '../units.js';
 import { goalHint } from '../profile.js';
+import { activityFor, newCardioExercise, isCardioExercise, derive, FIELDS as CARDIO_FIELDS } from '../cardio.js';
+import { dUnit, spUnit, toShownD, fromShownD, fmtD, fmtSp } from '../units.js';
 import { pickerTypes, typeById, typeName, typeColor } from '../types.js';
 import {
-  BREAK, SKIP_REASONS, SET_TYPE_LABEL, isTrainingType, newSession, newExercise, newSet,
+  BREAK, SKIP_REASONS, uid, SET_TYPE_LABEL, isTrainingType, newSession, newExercise, newSet,
   exerciseKey, cleanName, cleanNote, parseWeight, parseReps, parseMinutes, formatTarget, formatReps,
 } from '../model.js';
 import {
@@ -28,7 +30,7 @@ const REST_PRESETS = [45, 60, 90, 120, 180, 240];
 const SET_CYCLE = { working: 'warmup', warmup: 'failure', failure: 'working' };
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const isExDone = (ex) => ex.sets.length > 0 && ex.sets.every((s) => s.done);
+const isExDone = (ex) => (isCardioExercise(ex) ? !!ex.cardio?.done : ex.sets.length > 0 && ex.sets.every((s) => s.done));
 
 export function renderDay(root, date) {
   const today = todayISO();
@@ -61,18 +63,24 @@ export function renderDay(root, date) {
   let barEls = null;
   let heroObserver = null;
   let mini = null;
+  const cardioTimers = new Set(); // running Start/Stop timers on cardio cards
+
+  // A cardio-kind type with no template (the Cardio day) starts with a Treadmill entry, as the chip used to.
+  const cardioStart = (type) => (typeById(type)?.kind === 'cardio' ? [newCardioExercise('Treadmill', uid())] : []);
 
   function buildSession(type) {
     const s = newSession(date, store.state.settings, type);
     if (store.state.templates[type]?.length) {
       s.exercises = exercisesFromTemplate(type, store.state.templates, store.allSessions(), date, today);
-    }
+    } else s.exercises = cardioStart(type);
     return s;
   }
 
   // Re-render the whole screen, keeping focus on the same logical control.
   function render() {
     const fkey = document.activeElement?.dataset?.fkey;
+    cardioTimers.forEach(clearInterval);
+    cardioTimers.clear();
     let body;
     if (session && session.type !== BREAK) body = editor();
     else if (session) body = restDay();
@@ -138,12 +146,11 @@ export function renderDay(root, date) {
     const pr = h('span', { class: 'hero-pr', hidden: true });
     const fill = h('span', { class: 'hero-fill' });
     const clock = h('span', { class: 'chip on-block hero-clock', hidden: true }, icon('clock'), h('span', { class: 'num' }));
-    const cardio = training ? h('input', {
-      id: 'cardio', class: 'hero-input num', type: 'text', inputmode: 'decimal', autocomplete: 'off',
-      value: session.cardioMinutes ?? '', placeholder: '0', dataset: { fkey: 'cardio' }, onfocus: selectAll,
-      oninput: (e) => { session.cardioMinutes = parseMinutes(e.target.value); markValidity(e.target, session.cardioMinutes); changed(); },
-      onchange: (e) => { e.target.value = session.cardioMinutes ?? ''; },
-    }) : null;
+    // Cardio is part of the day (still one session): a small badge with its minutes.
+    const cardioList = training ? session.exercises.filter(isCardioExercise) : [];
+    const cardioMin = cardioList.reduce((n, e) => n + (e.cardio.minutes ?? 0), 0);
+    const cardioBadge = cardioList.length ? h('span', { class: 'chip on-block hero-cardio', id: 'hero-cardio' }, icon('run'),
+      h('span', {}, cardioMin ? `Cardio ${fmtNum(cardioMin, 1)} min` : 'Cardio')) : null;
     barEls = { count, clock, fill, pr };
     return h('header', { class: `day-hero${slug ? ` t-${slug}` : ' t-none'}` },
       h('div', { class: 'hero-top' },
@@ -159,9 +166,7 @@ export function renderDay(root, date) {
       training ? [
         h('div', { class: 'hero-row' }, count, pr),
         h('div', { class: 'hero-bar', role: 'presentation' }, fill),
-        h('div', { class: 'hero-chips' },
-          clock,
-          h('label', { class: 'chip on-block hero-tread', for: 'cardio' }, icon('run'), h('span', {}, 'Treadmill'), cardio, h('span', {}, 'min'))),
+        h('div', { class: 'hero-chips' }, clock, cardioBadge),
       ] : null);
   }
 
@@ -375,14 +380,12 @@ export function renderDay(root, date) {
     session.type = t;
     if (t === BREAK) {
       session.exercises = [];
-      session.cardioMinutes = null;
       session.startedAt = null;
       session.finishedAt = null;
     } else {
       session.exercises = store.state.templates[t]?.length
         ? exercisesFromTemplate(t, store.state.templates, store.allSessions(), date, today)
-        : [];
-      if (session.cardioMinutes == null) session.cardioMinutes = store.state.settings.defaultCardioMinutes || null;
+        : cardioStart(t);
     }
     await structural();
   }
@@ -460,19 +463,13 @@ export function renderDay(root, date) {
     const ok = await sheet({
       title: session.finishedAt ? 'Workout summary' : 'Finish workout',
       build: (close) => {
-        const cardio = h('input', {
-          id: 'fin-cardio', class: 'num-input', type: 'text', inputmode: 'decimal', autocomplete: 'off',
-          value: session.cardioMinutes ?? '', placeholder: '0',
-        });
         const notes = h('textarea', { id: 'fin-notes', rows: '3', placeholder: 'How did it feel?', value: session.notes });
-        const canFinish = done > 0 || parseMinutes(cardio.value) > 0;
+        const cardioDone = session.exercises.filter((e) => isCardioExercise(e) && e.cardio.done);
+        const canFinish = done > 0 || cardioDone.length > 0;
         return h('form', {
           class: 'stack', onsubmit: (e) => {
             e.preventDefault();
-            const mins = parseMinutes(cardio.value);
-            if (cardio.value.trim() && mins == null) { toast('Treadmill minutes must be a number.'); return; }
-            if (!session.finishedAt && done === 0 && !(mins > 0)) { toast('No sets ticked yet. Tick a set when you finish it.'); return; }
-            session.cardioMinutes = mins;
+            if (!session.finishedAt && !canFinish) { toast('Nothing done yet. Tick a set or mark a cardio entry Done.'); return; }
             session.notes = notes.value;
             close(true);
           },
@@ -483,9 +480,9 @@ export function renderDay(root, date) {
           stat('Sets', `${done} of ${planned}`),
           stat('PRs', String(prSetCount(prs)))),
         lines.length ? h('ul', { class: 'pr-list' }, lines.map((l) => h('li', {}, icon('trophy'), h('span', { class: 'pr-tag' }, 'PR'), ` ${l}`))) : null,
-        h('div', { class: 'field-row' }, h('label', { for: 'fin-cardio' }, 'Treadmill', h('span', { class: 'muted' }, ' (min)')), cardio),
+        cardioDone.length ? h('p', { class: 'fin-cardio' }, icon('run'), ` Cardio: ${cardioDone.map((e) => `${e.name} ${fmtNum(e.cardio.minutes, 1)} min`).join(', ')}`) : null,
         h('div', { class: 'field' }, h('label', { for: 'fin-notes', class: 'label' }, 'Notes'), notes),
-        canFinish || session.finishedAt ? null : h('p', { class: 'muted' }, 'No sets ticked yet. Tick a set when you finish it.'),
+        canFinish || session.finishedAt ? null : h('p', { class: 'muted' }, 'Nothing done yet. Tick a set or mark a cardio entry Done.'),
         h('button', { class: 'btn primary block', type: 'submit' }, session.finishedAt ? 'Save summary' : 'Finish workout'));
       },
     });
@@ -505,7 +502,140 @@ export function renderDay(root, date) {
     return t.repsMin === t.repsMax ? `${sets}, ${t.repsMin} reps` : `${sets}, ${t.repsMin} to ${t.repsMax} reps`;
   };
 
+  /**
+   * One cardio entry: Time (minutes, the only thing Done needs; a Start/Stop timer can fill it in), and optional
+   * Distance, Avg speed, Incline and Calories. With Time plus Distance or Speed, the other is worked out live and
+   * marked "calculated" (never stored). Empty stays empty.
+   */
+  function cardioCard(ex) {
+    const c = ex.cardio;
+    const act = activityFor(ex.name);
+    const art = h('article', { class: `card ex cardio-card${c.done ? ' complete' : ''}`, dataset: { exid: ex.id }, 'aria-label': `${ex.name}, cardio` });
+    const calcTag = { distanceKm: h('span', { class: 'calc-tag', hidden: true }, 'calculated'), speedKmh: h('span', { class: 'calc-tag', hidden: true }, 'calculated') };
+    const ins = {};
+    const shown = { minutes: (v) => fmtNum(v, 1), distanceKm: (v) => fmtD(v, 2), speedKmh: (v) => fmtSp(v, 1), incline: (v) => fmtNum(v, 1), kcal: (v) => String(v) };
+    const toStored = { minutes: (n) => n, distanceKm: (n) => fromShownD(n), speedKmh: (n) => fromShownD(n), incline: (n) => n, kcal: (n) => n };
+    function updateCalc() {
+      const d = derive(c);
+      for (const key of ['distanceKm', 'speedKmh']) {
+        const input = ins[key];
+        const isCalc = d.calc === (key === 'distanceKm' ? 'distance' : 'speed');
+        if (isCalc) {
+          if (document.activeElement !== input) input.value = shown[key](d[key]);
+          input.classList.add('calc');
+          calcTag[key].hidden = false;
+        } else if (input.classList.contains('calc')) {
+          input.value = c[key] != null ? shown[key](c[key]) : '';
+          input.classList.remove('calc');
+          calcTag[key].hidden = true;
+        }
+      }
+      sub.textContent = summary();
+    }
+    const summary = () => {
+      const d = derive(c);
+      return [c.minutes != null ? `${fmtNum(c.minutes, 1)} min` : null, d.distanceKm != null ? `${fmtD(d.distanceKm, 2)} ${dUnit()}` : null,
+        d.speedKmh != null ? `${fmtSp(d.speedKmh, 1)} ${spUnit()}` : null].filter(Boolean).join(' · ') || 'Cardio';
+    };
+    const field = (key, label, unit, inputmode = 'decimal') => {
+      const id = `cx-${ex.id}-${key}`;
+      ins[key] = h('input', {
+        id, class: 'num-input cardio-input', type: 'text', inputmode, autocomplete: 'off', placeholder: '–',
+        value: c[key] != null ? shown[key](c[key]) : '', dataset: { fkey: `${ex.id}:${key === 'minutes' ? 'min' : key}` },
+        'aria-label': `${ex.name}: ${label}${key === 'minutes' ? '' : ' (optional)'}, ${unit}`, onfocus: selectAll,
+        oninput: (e) => {
+          const raw = e.target.value.trim();
+          e.target.classList.remove('calc');
+          if (calcTag[key]) calcTag[key].hidden = true;
+          const typed = raw === '' ? null : Number(raw.replace(',', '.'));
+          const v = typed == null ? null : CARDIO_FIELDS[key](toStored[key](typed));
+          c[key] = v;
+          markValidity(e.target, raw === '' ? '' : v);
+          if (key === 'minutes' && v == null && c.done) { c.done = false; art.classList.remove('complete'); doneBtn.setAttribute('aria-pressed', 'false'); }
+          updateCalc();
+          changed();
+        },
+        onchange: (e) => { if (c[key] != null && !e.target.classList.contains('calc')) e.target.value = shown[key](c[key]); updateCalc(); },
+      });
+      return h('div', { class: `cardio-field cf-${key}` },
+        h('label', { for: id }, label, h('span', { class: 'muted' }, ` ${unit}`), calcTag[key] ?? null),
+        ins[key]);
+    };
+    // Start/Stop: fills Time with the elapsed minutes. Survives leaving the screen (the start time is saved).
+    const timerBtn = h('button', { class: 'btn small soft cardio-timer', type: 'button', dataset: { fkey: `${ex.id}:timer` } });
+    const paintTimer = () => {
+      if (!c.timerStartedAt) { timerBtn.replaceChildren(icon('play'), 'Start'); timerBtn.setAttribute('aria-label', `Start a timer for ${ex.name}`); return; }
+      const sec = Math.max(0, Math.round((Date.now() - c.timerStartedAt) / 1000));
+      timerBtn.replaceChildren(icon('pause'), h('span', { class: 'num' }, `Stop ${formatClock(sec)}`));
+      timerBtn.setAttribute('aria-label', `Stop the timer for ${ex.name}, running ${Math.floor(sec / 60)} minutes`);
+    };
+    const runTimer = () => { const t = setInterval(paintTimer, 1000); cardioTimers.add(t); };
+    timerBtn.addEventListener('click', () => {
+      if (c.timerStartedAt) {
+        c.minutes = CARDIO_FIELDS.minutes(Math.max(0.1, (Date.now() - c.timerStartedAt) / 60000));
+        c.timerStartedAt = null;
+        ins.minutes.value = shown.minutes(c.minutes);
+        markValidity(ins.minutes, c.minutes);
+        cardioTimers.forEach(clearInterval);
+        cardioTimers.clear();
+      } else {
+        c.timerStartedAt = Date.now();
+        runTimer();
+      }
+      paintTimer();
+      updateCalc();
+      changed();
+    });
+    if (c.timerStartedAt) runTimer();
+    paintTimer();
+
+    const doneBtn = h('button', {
+      class: 'tick cardio-done', type: 'button', 'aria-pressed': String(c.done), 'aria-label': `${ex.name} done`, dataset: { fkey: `${ex.id}:done` },
+      onclick: () => {
+        if (!c.done && c.minutes == null) {
+          // Time is the only thing Done needs; every other field may stay empty.
+          toast(`Enter the time for ${ex.name}, then tap Done.`);
+          ins.minutes.focus();
+          return;
+        }
+        c.done = !c.done;
+        doneBtn.setAttribute('aria-pressed', String(c.done));
+        art.classList.toggle('complete', c.done);
+        afterDoneChange(c.done);
+        changed();
+      },
+    }, icon('check'));
+    const sub = h('span', { class: 'ex-sub' }, summary());
+    art.append(
+      h('header', { class: 'ex-head' },
+        h('span', { class: 'ex-tile' }, icon(act?.icon ?? 'run')),
+        h('span', { class: 'ex-text' }, h('h3', { class: 'ex-name' }, ex.name), sub),
+        doneBtn,
+        h('button', { class: 'icon-btn subtle', 'aria-label': `Remove ${ex.name}`, onclick: () => removeExercise(ex) }, icon('trash'))),
+      h('div', { class: 'cardio-body' },
+        h('div', { class: 'cardio-time' }, field('minutes', 'Time', 'min'), timerBtn),
+        h('div', { class: 'cardio-grid' },
+          field('distanceKm', 'Distance', dUnit()), field('speedKmh', 'Avg speed', spUnit()),
+          field('incline', 'Incline', '%'), field('kcal', 'Calories', 'kcal', 'numeric'))));
+    updateCalc();
+    return art;
+  }
+
+  /** Every exercise (sets and cardio) done on a past or today's day finishes the workout; undo straight after reopens it. */
+  function afterDoneChange(nowDone) {
+    const allDone = session.exercises.length && session.exercises.every(isExDone);
+    if (nowDone && allDone && !session.finishedAt && when !== 'future') {
+      session.finishedAt = Date.now();
+      autoFinished = true;
+      toast('Nice, workout finished.');
+    } else if (!nowDone && autoFinished && session.finishedAt) {
+      session.finishedAt = null;
+      autoFinished = false;
+    }
+  }
+
   function exerciseGroup(ex, list) {
+    if (isCardioExercise(ex)) return cardioCard(ex);
     const done = isExDone(ex);
     const collapsed = (done && !expanded.has(ex.id)) || shut.has(ex.id);
     const last = lastSetsFor(list, exerciseKey(ex.name), date, today);
@@ -758,8 +888,20 @@ export function renderDay(root, date) {
       present,
       type: session.type,
       lastFor: (key) => lastSetsFor(list, key, date, today),
+      cardio: true,
     });
     if (!name) return;
+    const act = activityFor(name);
+    if (act) {
+      // A cardio activity: one entry, no sets (any day, any type).
+      const ex = newCardioExercise(act.name, uid());
+      session.exercises.push(ex);
+      await structural();
+      const card = view.querySelector(`[data-exid="${ex.id}"]`);
+      card?.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+      card?.querySelector('[data-fkey$=":min"]')?.focus({ preventScroll: true });
+      return;
+    }
     const key = exerciseKey(name);
     if (present.has(key)) { toast('Already added.'); return; }
     const known = store.allExerciseNames().find((n) => n.key === key);
@@ -776,6 +918,12 @@ export function renderDay(root, date) {
 
   // ---------- derived bits (PRs, counts) ----------
   function refreshDerived() {
+    // The day's cardio badge follows the minutes as they're typed.
+    const badge = document.getElementById('hero-cardio');
+    if (badge && session) {
+      const min = session.exercises.filter(isCardioExercise).reduce((n, e) => n + (e.cardio.minutes ?? 0), 0);
+      badge.lastElementChild.textContent = min ? `Cardio ${fmtNum(min, 1)} min` : 'Cardio';
+    }
     const prs = prsForSession(store.allSessions(), session, today);
     exList?.querySelectorAll('.ex').forEach((card) => {
       const info = prs.get(card.dataset.exid);
@@ -838,6 +986,7 @@ export function renderDay(root, date) {
   return async () => {
     offSave();
     clearInterval(clockHandle);
+    cardioTimers.forEach(clearInterval);
     setKeepAwake(false);
     heroObserver?.disconnect();
     if (!session || draft) return;

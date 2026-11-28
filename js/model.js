@@ -8,9 +8,10 @@ import { cleanMeasurements, normalizeTracked, DEFAULT_TRACKED } from './measure.
 import { normalizeNutrition, normalizeIntake } from './nutrition.js';
 import { normalizeSplits } from './splits.js';
 import { LIMITS, safeKey } from './importguard.js';
+import { normalizeCardio, migrateTreadmillMinutes } from './cardio.js';
 
-export const APP_VERSION = '1.13.0'; // keep in sync with VERSION in sw.js (a test checks this)
-export const SCHEMA_VERSION = 10;
+export const APP_VERSION = '1.15.0'; // keep in sync with VERSION in sw.js (a test checks this)
+export const SCHEMA_VERSION = 11;
 
 // Session types are data since v7 (js/types.js): ids are stable, names and colours are editable.
 // BREAK is a deliberate rest day: valid in the schedule and as a logged day, but not a type.
@@ -35,7 +36,6 @@ export const WEIGHT_STEPS = [1, 2.5, 5];
 // The pound steps (2.5, 5, 10 lb) as the kg values that are stored; see units.js STEP_CHOICES.
 export const WEIGHT_STEPS_ALL = [...WEIGHT_STEPS, ...[2.5, 5, 10].map((n) => Math.round(n * 0.45359237 * 10000) / 10000)];
 export const DEFAULT_SETTINGS = {
-  defaultCardioMinutes: 20,
   weekStartsOn: 1,
   defaultRestSeconds: 90, // used when an exercise has no restSeconds of its own
   weightStep: 2.5, // −/+ buttons and overload hints, unless the exercise sets its own
@@ -303,7 +303,6 @@ export function newSession(date, settings = DEFAULT_SETTINGS, type = null) {
     date,
     type,
     exercises: [],
-    cardioMinutes: type === BREAK ? null : settings.defaultCardioMinutes || null,
     notes: '',
     startedAt: null, // first set ticked (ms)
     finishedAt: null, // "Finish workout" confirmed (ms)
@@ -338,13 +337,20 @@ export function newExercise(name, sets, opts = {}) {
  * Such sessions are discarded when leaving the day screen.
  */
 export function isSessionEmpty(s, settings = DEFAULT_SETTINGS) {
-  const cardioUntouched = !s.cardioMinutes || s.cardioMinutes === settings.defaultCardioMinutes;
-  return !s.type && s.exercises.length === 0 && !s.notes.trim() && cardioUntouched;
+  return !s.type && s.exercises.length === 0 && !s.notes.trim();
 }
 
 function normalizeExercise(raw) {
   const name = cleanName(raw?.name);
   if (!name) return null;
+  if (raw.kind === 'cardio') {
+    // One cardio entry: no sets; optional fields stay null when empty (cardio.js).
+    return {
+      id: typeof raw.id === 'string' && raw.id ? raw.id : uid(), name, kind: 'cardio',
+      target: null, weightStep: null, restSeconds: null, hintDismissed: false, note: cleanNote(raw.note), sets: [],
+      cardio: normalizeCardio(raw.cardio),
+    };
+  }
   const sets = Array.isArray(raw.sets)
     ? raw.sets.slice(0, LIMITS.setsPerExercise).map((s) => ({
       weight: parseWeight(s?.weight),
@@ -383,7 +389,6 @@ export function normalizeSession(raw) {
     date: raw.date,
     type,
     exercises: Array.isArray(raw.exercises) ? raw.exercises.slice(0, LIMITS.exercisesPerSession).map(normalizeExercise).filter(Boolean) : [],
-    cardioMinutes: parseMinutes(raw.cardioMinutes),
     notes: typeof raw.notes === 'string' ? raw.notes.slice(0, 10000) : '',
     startedAt: Number.isFinite(raw.startedAt) && raw.startedAt > 0 ? raw.startedAt : null,
     finishedAt: Number.isFinite(raw.finishedAt) && raw.finishedAt > 0 ? raw.finishedAt : null,
@@ -397,7 +402,7 @@ export function mergeSessions(a, b) {
   const exercises = [...a.exercises];
   for (const ex of b.exercises) {
     const existing = exercises.find((e) => exerciseKey(e.name) === exerciseKey(ex.name));
-    if (existing) existing.sets = [...existing.sets, ...ex.sets];
+    if (existing && existing.kind !== 'cardio' && ex.kind !== 'cardio') existing.sets = [...existing.sets, ...ex.sets];
     else exercises.push(ex);
   }
   const typeA = a.type === BREAK ? null : a.type;
@@ -405,7 +410,6 @@ export function mergeSessions(a, b) {
     ...a,
     type: typeA ?? b.type ?? a.type,
     exercises,
-    cardioMinutes: (a.cardioMinutes ?? 0) + (b.cardioMinutes ?? 0) || null,
     notes: [a.notes, b.notes].filter((n) => n.trim()).join('\n\n'),
     updatedAt: Math.max(a.updatedAt, b.updatedAt),
   };
@@ -463,6 +467,8 @@ export const SESSION_MIGRATIONS = {
   8: (s) => ({ ...s, v: 9 }),
   // v9 → v10: sessions unchanged; saved splits are new (splits.js).
   9: (s) => ({ ...s, v: 10 }),
+  // v10 → v11: a workout's treadmill minutes become a Treadmill cardio entry in it (cardio.js); the field goes.
+  10: (s) => ({ ...migrateTreadmillMinutes(s, uid), v: 11 }),
 };
 
 // ---------------------------------------------------------------------------
@@ -579,6 +585,14 @@ export const BACKUP_MIGRATIONS = {
       : data.sessions,
     splits: Array.isArray(data.splits) ? data.splits : [],
   }),
+  // v10 → v11: treadmill minutes become Treadmill cardio entries (sessions above); the default-minutes setting goes.
+  10: (data) => ({
+    ...data,
+    schemaVersion: 11,
+    sessions: Array.isArray(data.sessions)
+      ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[10](s) : s))
+      : data.sessions,
+  }),
 };
 
 /** Upgrade a stored session record. Returns { session, changed }. */
@@ -595,8 +609,6 @@ export function upgradeSessionRecord(rec) {
 
 export function pickSettings(raw) {
   const out = {};
-  const cardio = parseMinutes(raw?.defaultCardioMinutes);
-  if (cardio != null) out.defaultCardioMinutes = cardio;
   if (raw?.weekStartsOn === 0 || raw?.weekStartsOn === 1) out.weekStartsOn = raw.weekStartsOn;
   const rest = normalizeRest(raw?.defaultRestSeconds);
   if (rest != null) out.defaultRestSeconds = rest;

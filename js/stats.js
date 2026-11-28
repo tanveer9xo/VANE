@@ -253,7 +253,7 @@ function rangeStats(sessions, from, to, isCounted) {
     out.sessions++;
     out.volume += sessionVolume(s);
     out.sets += sessionSetCount(s);
-    out.cardioMinutes += s.cardioMinutes ?? 0;
+    for (const e of s.exercises) if (e.kind === 'cardio' && e.cardio?.done) out.cardioMinutes += e.cardio.minutes ?? 0;
   }
   return out;
 }

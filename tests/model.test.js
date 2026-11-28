@@ -43,13 +43,13 @@ test('default exercise list is seeded', () => {
   assert.ok(DEFAULT_EXERCISES.includes('Romanian Deadlift'));
 });
 
-test('newSession prefills default cardio; empty detection ignores untouched default', () => {
-  const s = newSession('2026-11-19', { defaultCardioMinutes: 20, weekStartsOn: 1 });
-  assert.equal(s.cardioMinutes, 20);
+test('newSession has no pre-filled cardio (v11: cardio is an exercise you add); empty detection', () => {
+  const s = newSession('2026-11-19', { weekStartsOn: 1 });
+  assert.equal('cardioMinutes' in s, false);
   assert.equal(s.v, SCHEMA_VERSION);
   assert.ok(isSessionEmpty(s));
   assert.ok(!isSessionEmpty({ ...s, type: 'Push' }));
-  assert.ok(!isSessionEmpty({ ...s, cardioMinutes: 35 }));
+  assert.ok(!isSessionEmpty({ ...s, exercises: [{ name: 'Treadmill', kind: 'cardio', sets: [], cardio: {} }] }));
   assert.ok(!isSessionEmpty({ ...s, notes: 'felt good' }));
   assert.ok(!isSessionEmpty({ ...s, exercises: [newExercise('Squat')] }));
 });
@@ -76,7 +76,7 @@ test('normalizeSession rejects bad dates and coerces fields', () => {
     exercises: [{ name: 'Curl', sets: [{ weight: '12,5', reps: '10' }, { weight: 'x', reps: 3 }] }, { name: '' }],
   });
   assert.equal(s.type, 'Other');
-  assert.equal(s.cardioMinutes, 15);
+  assert.equal('cardioMinutes' in s, false, 'the old field is gone (migrations turn it into a Treadmill entry first)');
   assert.equal(s.exercises.length, 1);
   assert.deepEqual(s.exercises[0].sets, [{ weight: 12.5, reps: 10, done: true, type: 'working' }, { weight: null, reps: 3, done: true, type: 'working' }]);
   assert.equal(s.notes, '');
@@ -100,10 +100,10 @@ test('migrateBackup merges two sessions on the same date (one per day)', () => {
   assert.equal(out.sessions.length, 1);
   const s = out.sessions[0];
   assert.equal(s.type, 'Push');
-  assert.equal(s.exercises.length, 1);
+  assert.deepEqual(s.exercises.map((e) => e.name), ['Squat', 'Treadmill'], 'the pm treadmill minutes became an entry');
   assert.equal(s.exercises[0].sets.length, 2);
   assert.equal(s.notes, 'am\n\npm');
-  assert.equal(s.cardioMinutes, 20);
+  assert.equal(s.exercises[1].cardio.minutes, 20);
 });
 
 test('migrateBackup refuses newer schemas and junk', () => {
@@ -126,12 +126,13 @@ test('upgradeSessionRecord leaves current records untouched', () => {
   assert.equal(legacy.session.v, SCHEMA_VERSION);
 });
 
-test('mergeSessions keeps first type, sums cardio', () => {
-  const a = { ...newSession('2026-01-01'), type: null, cardioMinutes: 10 };
-  const b = { ...newSession('2026-01-01'), type: 'Legs', cardioMinutes: 5 };
+test('mergeSessions keeps first type; cardio entries are kept side by side, never merged into sets', () => {
+  const cardio = (minutes) => ({ id: String(minutes), name: 'Treadmill', kind: 'cardio', sets: [], cardio: { minutes } });
+  const a = { ...newSession('2026-01-01'), type: null, exercises: [cardio(10)] };
+  const b = { ...newSession('2026-01-01'), type: 'Legs', exercises: [cardio(5)] };
   const m = mergeSessions(a, b);
   assert.equal(m.type, 'Legs');
-  assert.equal(m.cardioMinutes, 15);
+  assert.deepEqual(m.exercises.map((e) => e.cardio.minutes), [10, 5]);
 });
 
 test('service worker precaches every app file and matches APP_VERSION', () => {

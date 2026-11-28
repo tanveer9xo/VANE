@@ -4,6 +4,7 @@
 //
 //   #/  #/cal/YYYY-MM  #/day/YYYY-MM-DD  #/plan  #/timer
 //   #/progress  #/progress/<exercise>  #/progress/~records|~map|~consistency  #/progress/~body[/YYYY-MM-DD]
+//   #/progress/~cardio/<activity>
 //   #/settings[/profile|nutrition|backup|targets]  #/welcome/1…5  #/body[/YYYY-MM-DD] (old link)
 import { isValidISODate, parseMonthKey } from './dates.js';
 
@@ -41,6 +42,7 @@ export function parseRoute(hash) {
     case 'progress': {
       if (!args.length) return ok('progress');
       const [seg, extra] = args;
+      if (seg === '~cardio') return args.length === 2 && /^[a-z]{2,20}$/.test(extra) ? ok('progress', [seg, extra]) : bad; // a cardio activity
       if (SEGMENTS.includes(seg)) {
         if (args.length === 1) return ok('progress', [seg]);
         // ~body may carry a day to open (anything else is ignored rather than rejected).
