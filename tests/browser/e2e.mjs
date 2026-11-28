@@ -672,6 +672,74 @@ for (const width of [320, 412]) {
 }
 await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
 
+// ---------------- cardio in templates (1.16) ----------------
+// A future day planned for a lifting type, nothing logged yet.
+const planned = await ev(`Promise.all([import('./js/store.js'), import('./js/plan.js'), import('./js/dates.js'), import('./js/types.js')]).then(([m, p, d, t]) => {
+  for (let i = 14; i < 70; i++) { const date = d.addDays(${J(TODAY)}, i); const type = p.scheduledFor(date, m.state.schedule); if (t.typeById(type)?.kind === 'lift' && !m.getSession(date)) return { date, type }; }
+  return null; })`);
+check(!!planned, `a future ${planned?.type} day to plan (${planned?.date})`);
+const overflowing = () => ev(`(()=>{const w=innerWidth; return [...document.querySelectorAll('main *')].filter(e => { const r=e.getBoundingClientRect(); return r.width && (r.right > w + 1 || r.left < -1); }).slice(0,3).map(e => e.className || e.tagName)})()`);
+const openTemplate = async (type) => {
+  await go('#/'); await go('#/plan');
+  await ev(`(()=>{const i=[...document.querySelectorAll('input[name=tpl-type]')].find(x=>x.value===${J(type)}); i.click(); return true})()`);
+  await sleep(400);
+};
+await openTemplate(planned.type);
+check(await ev(`[...document.querySelectorAll('input[name=tpl-type]')].some(x => x.value === 'Cardio')`), 'Planner: the Cardio type has a template too');
+await clickText('button.add-ex', 'Add exercise to');
+await sleep(400);
+check(await ev(`[...document.querySelectorAll('dialog.picker .picker-section')].some(e => e.textContent === 'Cardio')`), 'template “Add exercise” has the Cardio group');
+await clickText('dialog.picker .picker-opt', 'Treadmill');
+await sleep(500);
+check((await exists('.tpl-cardio')) && (await ev(`document.activeElement?.dataset.fkey`)) === 'min-cardio-treadmill'
+  && !(await exists('.tpl-cardio [data-fkey^="sets-"], .tpl-cardio [data-fkey^="rest-"], .tpl-cardio select')), 'a cardio item: activity and default time, no sets, reps, rest or muscle');
+await setValue('[data-fkey="min-cardio-treadmill"]', '10');
+await sleep(700);
+for (let i = 0; i < 15 && (await ev(`!!document.querySelector('[data-fkey="up-cardio-treadmill"]') && !document.querySelector('[data-fkey="up-cardio-treadmill"]').disabled`)); i++) {
+  await click('[data-fkey="up-cardio-treadmill"]');
+  await sleep(250);
+}
+const tpl = await store(`m.state.templates[${J(planned.type)}]`);
+check(J(tpl[0]) === J({ name: 'Treadmill', kind: 'cardio', minutes: 10 }) && tpl.slice(1).every((i) => i.kind !== 'cardio'), `moved first in ${planned.type}, 10 min saved (${J(tpl.map((i) => i.name))})`);
+check((await text('.tpl-list > li:first-child')).includes('Treadmill') && (await text('.tpl-list > li:first-child')).includes('Cardio'), 'the editor shows it first, tagged Cardio');
+const tplShot = async (name) => { await ev(`document.querySelector('.tpl-cardio').scrollIntoView({ block: 'start' }); window.scrollBy(0, -90); true`); await sleep(150); await shot(name); };
+await tplShot('57-template-cardio');
+// The planned day opens with Treadmill first, Time pre-filled; nothing saved yet.
+const dayFirst = async () => { await go('#/'); await go(`#/day/${planned.date}`); await sleep(300); };
+await dayFirst();
+const firstCard = `[data-exid]`;
+check((await ev(`document.querySelector('${firstCard}').matches('${cardioCard('Treadmill')}')`))
+  && (await ev(`document.querySelector('${cardioCard('Treadmill')} [data-fkey$=":min"]').value`)) === '10'
+  && (await ev(`document.querySelector('${cardioCard('Treadmill')} .cardio-done').getAttribute('aria-pressed')`)) === 'false',
+  'the planned day opens with Treadmill first, Time 10 min filled in, not Done');
+check((await sessionOf(planned.date)) == null && (await exists('.draft-note')), 'nothing is saved just by opening it');
+await shot('58-day-cardio-first');
+for (const width of [320, 412]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
+  await openTemplate(planned.type);
+  let over = await overflowing();
+  const smallT = await ev(`[...document.querySelectorAll('.tpl-cardio button, .tpl-cardio input')].filter(b => b.getBoundingClientRect().height < 32).length`);
+  check((await ev(`document.documentElement.scrollWidth <= innerWidth`)) && over.length === 0 && smallT === 0, `${width} px template editor with cardio: nothing spills${over.length ? ` (${J(over)})` : ''}`);
+  check(await ev(`(()=>{const n=document.querySelector('.tpl-cardio-name strong'); return n.getBoundingClientRect().height < parseFloat(getComputedStyle(n).fontSize) * 2})()`), `${width} px: the activity name stays on one line`);
+  await tplShot(`57-template-cardio-${width}`);
+  await dayFirst();
+  over = await overflowing();
+  check((await ev(`document.documentElement.scrollWidth <= innerWidth`)) && over.length === 0, `${width} px day with cardio first: nothing spills${over.length ? ` (${J(over)})` : ''}`);
+  await shot(`58-day-cardio-first-${width}`);
+}
+await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
+await dayFirst();
+check((await sessionOf(planned.date)) == null, 'still nothing saved after looking at it again');
+await setValue(`${cardioCard('Treadmill')} [data-fkey$=":distanceKm"]`, '1.5');
+await sleep(900);
+{
+  const saved = await sessionOf(planned.date);
+  check(saved?.exercises[0]?.name === 'Treadmill' && J(saved.exercises[0].cardio) === J({ minutes: 10, distanceKm: 1.5, speedKmh: null, incline: null, kcal: null, done: false, timerStartedAt: null })
+    && saved.exercises.slice(1).every((e) => e.kind !== 'cardio'), `saved once you change something, in template order (${J(saved?.exercises.map((e) => e.name))})`);
+}
+await ev(`import('./js/store.js').then(async (m) => { await m.deleteSession(${J(planned.date)}); await m.saveTemplates({ ...m.state.templates, [${J(planned.type)}]: m.state.templates[${J(planned.type)}].filter((i) => i.kind !== 'cardio') }); return true; })`);
+await go('#/');
+
 // ---------------- Round 5: exercise library, per-exercise progress, body map ----------------
 const R5 = THEME === 'dark'
   ? { lvl1: 'rgb(75, 80, 174)', lvl2: 'rgb(108, 108, 214)' }
@@ -1659,6 +1727,24 @@ await sleep(500);
 await click('.ob-next');
 await sleep(800);
 check((await ev('location.hash')) === '#/' && J((await store('m.state.schedule')).at(-1).days) === J({ sun: 'Break', mon: 'Upper', tue: 'Lower', wed: 'Break', thu: 'Full body', fri: 'Break', sat: 'Break' }) && (await store('m.state.settings.weeklyMin')) === 3, 'picking it applies it (3 sessions a week) and Start opens the Calendar');
+
+// ---------------- no rest bar after the set that completes the workout (1.16) ----------------
+await ev(`Promise.all([import('./js/store.js'), import('./js/model.js'), import('./js/timer.js')]).then(async ([m, model, t]) => {
+  t.stopRest();
+  await m.deleteSession(${J(TODAY)});
+  const s = model.newSession(${J(TODAY)}, m.state.settings, 'Upper');
+  s.exercises = [model.newExercise('Bench Press', [{ weight: 60, reps: 5 }, { weight: 60, reps: 5 }])];
+  await m.addSession(s);
+  return true; })`);
+await go('#/'); await go(`#/day/${TODAY}`);
+await sleep(300);
+await ev(`document.querySelectorAll('[data-exid] .tick')[0].click(); true`);
+await sleep(400);
+check(await visible('.rest-bar'), 'a set that isn’t the last: the rest bar starts');
+await ev(`document.querySelectorAll('[data-exid] .tick')[1].click(); true`);
+await sleep(400);
+check(!(await visible('.rest-bar')) && (await ev(`import('./js/timer.js').then((t) => t.getRest() === null)`)) && (await sessionOf(TODAY)).finishedAt > 0,
+  'the final set completes the workout: no rest bar (and the earlier rest stops)');
 
 check(externalRequests.length === 0, `no network calls outside the app${externalRequests.length ? `: ${externalRequests.slice(0, 3).join(', ')}` : ''}`);
 

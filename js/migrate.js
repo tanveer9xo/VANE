@@ -9,7 +9,7 @@
 //   5. Only then does the store write the plan in ONE transaction (all or nothing), with the new format number.
 import {
   SCHEMA_VERSION, APP_VERSION, DEFAULT_SETTINGS, upgradeSessionRecord, isSessionEmpty, pickSettings, normalizeSchedule,
-  normalizeTemplates, defaultSchedule, normalizeSkipReasons, BREAK,
+  normalizeTemplates, defaultSchedule, normalizeSkipReasons, BREAK, legacyTreadmill,
 } from './model.js';
 import { normalizeProfile, templatesFollowDefaultStep, profileForExisting } from './profile.js';
 import { normalizeTypes, defaultTypes, withKnownTypes, BUILTIN_IDS } from './types.js';
@@ -34,11 +34,27 @@ export function storedSchema(raw) {
 
 /**
  * Everything the store needs, worked out in memory. → { state: { sessions, body, settings, … },
- * writes: { sessions: [records to put], meta: { key: value } } }
+ * writes: { sessions: [records to put], meta: { key: value } }, report: { treadmill }, check }
+ * `legacyCardioMinutes`: the old default-treadmill-minutes setting found in a snapshot, for data whose
+ * settings no longer hold it (used only when upgrading from format 11 or older).
  */
-export function migrateStored(raw, { today }) {
-  const m = raw.meta;
+export function migrateStored(raw, { today, legacyCardioMinutes = null }) {
   const writes = { sessions: [], meta: {} };
+  const report = { treadmill: null };
+  let m = raw.meta;
+  // v11 → v12: the pre-1.14 "default treadmill minutes" becomes a Treadmill item (with that time) in every lifting
+  // and cardio template, current and saved splits; then the setting goes. Only once: format 12 never redoes it.
+  if (storedSchema(raw) < 12) {
+    const old = m.settings && typeof m.settings === 'object' && 'defaultCardioMinutes' in m.settings ? m.settings.defaultCardioMinutes : legacyCardioMinutes;
+    const r = legacyTreadmill({ templates: m.templates ?? m.settings?.templates, sessionTypes: m.sessionTypes, splits: m.splits, minutes: old });
+    if (r.minutes != null) {
+      m = { ...m, templates: r.templates, splits: r.splits };
+      writes.meta.templates = null; // filled in below, normalised
+      writes.meta.splits = r.splits;
+      report.treadmill = { minutes: r.minutes, types: r.changedTypes, splits: r.changedSplits };
+    }
+    if (m.settings && typeof m.settings === 'object' && 'defaultCardioMinutes' in m.settings) writes.meta.settings = null; // without it
+  }
   const types = normalizeTypes(m.sessionTypes) ?? defaultTypes();
   if (!m.sessionTypes) writes.meta.sessionTypes = types; // v6 → v7: the built-ins become the list
   const knownIds = [...BUILTIN_IDS, ...types.map((t) => t.id)];
@@ -63,6 +79,11 @@ export function migrateStored(raw, { today }) {
     if (!m.schedule || !m.templates || upgradingToV6 || m.settings?.schedule || m.settings?.templates) {
       Object.assign(writes.meta, { schedule, templates, settings });
     }
+    if ('templates' in writes.meta) writes.meta.templates = templates;
+    if ('settings' in writes.meta) writes.meta.settings = settings;
+    // Saved splits are written as stored, with only the Treadmill items added (never re-normalised here).
+    // For the check: every exercise each template had before is still there after.
+    const check = { templatesBefore: normalizeTemplates((upgradingToV6 ? templatesFollowDefaultStep(raw.meta.templates, settings.weightStep) : raw.meta.templates) ?? raw.meta.settings?.templates) };
     return {
       state: {
         sessions, settings, profile, schedule, templates, types,
@@ -74,6 +95,8 @@ export function migrateStored(raw, { today }) {
         lastExportAt: m.lastExportAt ?? null,
       },
       writes,
+      report,
+      check,
     };
   });
 }
@@ -101,6 +124,12 @@ export function verifyMigration(raw, plan) {
   const splitsBefore = Array.isArray(raw.meta.splits) ? raw.meta.splits.length : 0;
   if (s.splits.length !== splitsBefore) problems.push(`saved splits: ${splitsBefore} before, ${s.splits.length} after`);
   if (s.body.length !== raw.body.length) problems.push(`Body log entries: ${raw.body.length} before, ${s.body.length} after`);
+  // Templates: nothing a template had may go missing (a migration may add, e.g. Treadmill).
+  const lost = Object.entries(plan.check?.templatesBefore ?? {}).reduce((n, [id, list]) => {
+    const after = new Set((s.templates[id] ?? []).map((it) => it.name.toLowerCase()));
+    return n + list.filter((it) => !after.has(it.name.toLowerCase())).length;
+  }, 0);
+  if (lost) problems.push(`templates: ${lost} exercise${lost === 1 ? '' : 's'} would go missing`);
   if (problems.length) throw new MigrationError(`The data check failed (${problems.join('; ')}).`);
 }
 

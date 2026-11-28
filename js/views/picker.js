@@ -50,7 +50,7 @@ export function openExercisePicker({ usage = new Map(), present = new Set(), las
     let active = -1;
     let shown = [];
     const all = buildItems();
-    // The Cardio group (Day screen only): one entry each, no sets, never added to the exercise catalog.
+    // The Cardio group (Day screen and templates): one entry each, no sets, never added to the exercise catalog.
     const cardioItems = cardio ? ACTIVITIES.map((a) => ({ key: `cardio:${a.key}`, name: a.name, primary: [], equipment: null, cardio: true })) : [];
 
     const input = h('input', {

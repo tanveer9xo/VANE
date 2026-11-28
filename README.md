@@ -220,7 +220,7 @@ Run through this on a real phone after deploying, since browsers differ here.
 
 The repository root *is* the site. All paths are relative, so it works at a domain root or a sub-path such as `username.github.io/workout-tracker/`.
 
-**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.15.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
+**Before every deploy, bump the version** in `sw.js` (`VERSION`) and `js/model.js` (`APP_VERSION`); this release is 1.16.0. Installed copies then show "A new version is ready" with an **Update** button, or you can use Settings → App → Check for updates. `npm test` fails if the two values differ, or if a file in `js/`, `css/`, `icons/` or `fonts/` is missing from the service worker's precache list.
 
 ### GitHub Pages
 The repo `VANE` is served at `https://<you>.github.io/VANE/`. Every URL in the app is relative (manifest `start_url`/`scope`/`id` are `./`, the service worker registers `./sw.js` and precaches `./…`), so the sub-path just works. `npm run test:subpath` proves it: it serves the built site under `/VANE/` and checks the service worker scope, the precache, the manifest, Chrome's install criteria and offline use.
@@ -289,7 +289,7 @@ Routes: `#/cal/2026-11`, `#/day/2026-11-20`, `#/plan`, `#/timer`, `#/progress[/<
 
 | store       | key    | value |
 |-------------|--------|-------|
-| `sessions`  | `date` | `{ v: 11, date, type, exercises, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. A cardio exercise is `{ kind: 'cardio', name, sets: [], cardio: { minutes, distanceKm, speedKmh, incline, kcal, done, timerStartedAt } }` (empty = null). |
+| `sessions`  | `date` | `{ v: 12, date, type, exercises, notes, startedAt, finishedAt, createdAt, updatedAt }`. `type` is a session-type **id**, `'Break'` (logged rest) or `null`. A cardio exercise is `{ kind: 'cardio', name, sets: [], cardio: { minutes, distanceKm, speedKmh, incline, kcal, done, timerStartedAt } }` (empty = null). |
 | `exercises` | `key`  | the exercise catalog: `{ key, name, libId, primary: [group], secondary: [group], equipment, custom, favourite, needsMuscle }` |
 | `body`      | `date` | `{ date, weight (kg) \| null, waist (cm) \| null, neck, shoulders, chest, armL, armR, forearm, hips, thighL, thighR, calf (cm, only those recorded), bodyFat (%, optional), updatedAt }`. Any subset; nothing is required (v8). |
 | `meta`      | `key`  | `settings`, `schedule`, `templates`, `skipReasons`, `profile`, `sessionTypes`, `nutrition`, `intake`, `lastExportAt` (and v4's `muscles`, kept but no longer used) |
@@ -300,10 +300,10 @@ Routes: `#/cal/2026-11`, `#/day/2026-11-20`, `#/plan`, `#/timer`, `#/progress[/<
 - **`skipReasons`:** `{ 'YYYY-MM-DD': 'Busy' | 'Travel' | 'Tired' | 'Sick' | 'Other' }`. Optional; only used for days that turn out to be skipped. A logged rest day is a session with `type: 'Break'`.
 - **Exercise catalog:** one record per name you log; the name itself is never changed. `libId` links it to the library, and `primary`/`secondary` are display groups. `needsMuscle` marks the one-time question.
 - **`settings`:**
-  - general: `{ defaultCardioMinutes, weekStartsOn, defaultRestSeconds, weightStep, keepAwake, weeklyMin }` (`weeklyMin`: sessions per week that make a good week, or `null` to use the plan)
+  - general: `{ weekStartsOn, defaultRestSeconds, weightStep, keepAwake, weeklyMin }` (`weeklyMin`: sessions per week that make a good week, or `null` to use the plan)
   - body map: `{ muscleTarget: 10, muscleTargets: { Chest: 12, … } }`
   - timer: `{ timerSound, timerVibrate, autoStartRest, timerPreset }`
-- **`schedule`:** `[{ from: 'YYYY-MM-DD', days: { mon…sun } }]`. **`templates`:** `{ Push: [{ name, sets, repsMin, repsMax, weightStep, restSeconds }], … }`. A `null` step or rest means "use the setting".
+- **`schedule`:** `[{ from: 'YYYY-MM-DD', days: { mon…sun } }]`. **`templates`:** `{ Push: [{ name, sets, repsMin, repsMax, weightStep, restSeconds } | { name, kind: 'cardio', minutes }], … }` (cardio items from v12; `minutes` is the default time or `null`). A `null` step or rest means "use the setting".
 - **`sessionTypes`** (v7): `[{ id, name, short, color: 'red'…'pink' | null, kind: 'lift' | 'cardio' | 'other', builtin, hidden, archived, order }]`.
   - Sessions, the plan (`schedule[].days`) and `templates` all refer to a type by **id**, so renaming or recolouring never rewrites history.
   - The built-in ids are the original names (`'Push'`, `'Full body'`, …), so data from before v7 needed no rewrite. New types get `t-…` ids.
@@ -346,6 +346,12 @@ Backup file: `{ app, schemaVersion: 9, appVersion, exportedAt, units: 'kg' (stor
 - **Data is never touched:** updating saves any edit in progress first, then replaces only the app's own file cache (`workout-tracker-*`). IndexedDB and localStorage stay as they are.
 - **Tested:** `npm run test:update` bumps the version on a test server and checks the banner, Dismiss, the reload and that every record survives.
 
+### Cardio in templates (1.16, data format v12)
+- **Templates:** a session type's template (Planner → Templates) can hold cardio exercises from the same Cardio group, anywhere in the order: Treadmill first as a warm-up, or last. Each has an optional **default time**, and no sets, reps, rest or muscle. The Cardio type has a template too (Treadmill to start), and saved splits keep cardio items with the rest of their templates.
+- **On the day:** a planned day opens with the template in order, cardio included, with Time pre-filled from the default. It isn't Done, and nothing is saved until you change something or tap Done.
+- **Migration (v11 → v12):** the old **Default treadmill minutes** setting (before 1.14 it pre-filled the Treadmill chip on every training day, 20 by default) becomes a **Treadmill** item with that time at the end of every lifting template, on the Cardio type's Treadmill, and in saved splits' templates. If the setting was 0 (off), nothing is added. On a phone already on 1.15, where the setting is no longer in the settings, the snapshot taken before 1.15 supplies it. The migration check also makes sure no template loses an exercise.
+- **Rest timer:** the rest bar no longer starts after the set that completes the workout, and a rest still running from the set before stops.
+
 ### Install and data safety (1.15)
 - **Install:**
   - **Android/Chromium:** the browser's `beforeinstallprompt` is kept for an **Install VANE** button in Settings → App (above About) and a one-time, dismissible Calendar card.
@@ -373,7 +379,7 @@ Backup file: `{ app, schemaVersion: 9, appVersion, exportedAt, units: 'kg' (stor
   - **Time** (minutes) is the only thing **Done** needs. A Start/Stop timer can fill it in.
   - **Optional fields:** Distance (km or mi, per profile), Avg speed (km/h or mph), Incline % and Calories. Empty stays empty, never 0.
   - **Calculation:** with Time plus Distance or Speed, the other is worked out live and marked "calculated". It's shown, never stored. With only Time, Distance and Speed stay blank.
-- **Part of the day:** a day with cardio is still one session, and cardio shows as a small badge on the day and on its calendar cell. A Cardio-type day opens with a Treadmill entry.
+- **Part of the day:** a day with cardio is still one session, and cardio shows as a small badge on the day and on its calendar cell. A Cardio-type day opens with its template (Treadmill to start).
 - **Totals:** weekly cardio minutes (finished entries) appear in Settings → Stats and in the Calendar's "This week". Distance totals count only entries that have a distance.
 - **History:** Progress → Charts → Cardio has one history per activity. Time is always shown; Distance and Speed appear only when entries have them.
 - **Backups:** JSON and CSV (`cardio` rows: minutes, distance km, speed km/h, incline %, calories) keep empty values empty.

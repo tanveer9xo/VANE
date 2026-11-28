@@ -1,12 +1,14 @@
 // Saved splits (schema v10): "Save as my split" snapshots of the current week. Pure functions.
 //
 //   { id, name, days: { sun…sat: typeId | 'Break' | null }, types: [{ id, name, short, color, kind }],
-//     templates: { typeId: [{ name, sets, repsMin, repsMax, weightStep, restSeconds }] }, createdAt, updatedAt }
+//     templates: { typeId: [{ name, sets, repsMin, repsMax, weightStep, restSeconds } | { name, kind: 'cardio', minutes }] },
+//     createdAt, updatedAt }   (cardio items: v12)
 //
 // A snapshot keeps the type ids, so applying it lines the week up with your history; each type's name, short
 // label and colour come from the snapshot, restoring a type that was since edited, archived or deleted.
 // Applying never touches logged workouts or past days: the week changes from today (store.saveWeek).
 import { BREAK, PALETTE_KEYS } from './types.js';
+import { isCardioItem, normalizeCardioItem } from './cardio.js';
 
 export const MAX_SPLITS = 10;
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -17,6 +19,7 @@ const intIn = (v, lo, hi) => { const n = Number(v); return v != null && v !== ''
 const cleanItem = (x) => {
   const name = clean(typeof x === 'string' ? x : x?.name, 80);
   if (!name) return null;
+  if (isCardioItem(x)) return normalizeCardioItem(x, (v) => clean(v, 80));
   const step = Number(x?.weightStep);
   return {
     name, sets: intIn(x?.sets, 1, 20) ?? 3, repsMin: intIn(x?.repsMin, 1, 100), repsMax: intIn(x?.repsMax, 1, 100),

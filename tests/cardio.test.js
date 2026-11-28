@@ -24,11 +24,11 @@ test('the Cardio group: eight activities', () => {
 });
 
 test('v10 → v11: treadmill minutes become a Treadmill entry in that workout; nothing else changes', () => {
-  assert.equal(SCHEMA_VERSION, 11);
+  assert.ok(SCHEMA_VERSION >= 11);
   const done = { v: 10, date: '2026-11-10', type: 'Push', cardioMinutes: 20, finishedAt: 5, createdAt: 1, updatedAt: 1, notes: '',
     exercises: [{ id: 'a', name: 'Bench', sets: [{ weight: 60, reps: 8, done: true, type: 'working' }] }] };
   const { session } = upgradeSessionRecord(done);
-  assert.equal(session.v, 11);
+  assert.equal(session.v, SCHEMA_VERSION);
   assert.equal('cardioMinutes' in session, false);
   assert.deepEqual(session.exercises.map((e) => e.name), ['Bench', 'Treadmill']);
   assert.deepEqual(session.exercises[0].sets, done.exercises[0].sets, 'sets untouched');

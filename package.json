@@ -1,6 +1,6 @@
 {
   "name": "workout-tracker",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "private": true,
   "type": "module",
   "description": "Personal offline workout tracker PWA. No build step; this file only exists for the test/serve scripts.",

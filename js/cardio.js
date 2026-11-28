@@ -1,4 +1,5 @@
 // Cardio (schema v11): a cardio exercise is one entry in a workout, with no sets, kg or reps. Pure.
+// Schema v12: templates (and saved splits) can hold cardio items too: { name, kind: 'cardio', minutes }.
 //
 //   exercise: { id, name, kind: 'cardio', sets: [], cardio: { minutes, distanceKm, speedKmh, incline, kcal, done,
 //               timerStartedAt } }
@@ -50,9 +51,45 @@ export function normalizeCardio(raw) {
   return out;
 }
 
-/** A new cardio exercise for a day (no sets). */
-export function newCardioExercise(name, id) {
-  return { id, name, kind: 'cardio', target: null, weightStep: null, restSeconds: null, hintDismissed: false, note: '', sets: [], cardio: emptyCardio() };
+/** A new cardio exercise for a day (no sets). `minutes` pre-fills Time (from a template); it's not Done yet. */
+export function newCardioExercise(name, id, minutes = null) {
+  return {
+    id, name, kind: 'cardio', target: null, weightStep: null, restSeconds: null, hintDismissed: false, note: '', sets: [],
+    cardio: { ...emptyCardio(), minutes: FIELDS.minutes(minutes) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Template items (v12): { name, kind: 'cardio', minutes } — minutes is the default time (null = none).
+// ---------------------------------------------------------------------------
+export const isCardioItem = (it) => it?.kind === 'cardio';
+export const cardioItem = (name, minutes = null) => ({ name, kind: 'cardio', minutes: FIELDS.minutes(minutes) });
+/** A valid cardio template item, or null. */
+export function normalizeCardioItem(raw, cleanName) {
+  const name = cleanName(raw?.name);
+  return name ? cardioItem(name, raw?.minutes) : null;
+}
+
+/**
+ * v11 → v12: the old "default treadmill minutes" setting (pre-1.14 it pre-filled the Treadmill chip on every
+ * training day) becomes a Treadmill item with that time at the end of each template given. A template that
+ * already has a Treadmill cardio item gets the time on it instead (if it had none). → { templates, changed: [ids], minutes }
+ */
+export function addLegacyTreadmill(templates, ids, minutes) {
+  const m = FIELDS.minutes(minutes);
+  const out = { ...(templates ?? {}) };
+  const changed = [];
+  if (m == null) return { templates: out, changed, minutes: null };
+  for (const id of ids) {
+    const list = Array.isArray(out[id]) ? out[id] : [];
+    const at = list.findIndex((it) => isCardioItem(it) && String(it.name).toLowerCase() === 'treadmill');
+    if (at >= 0) {
+      if (list[at].minutes != null) continue;
+      out[id] = list.map((it, i) => (i === at ? { ...it, minutes: m } : it));
+    } else out[id] = [...list, cardioItem('Treadmill', m)];
+    changed.push(id);
+  }
+  return { templates: out, changed, minutes: m };
 }
 
 /**

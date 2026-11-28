@@ -3,15 +3,15 @@ import { isValidISODate, toISODate } from './dates.js';
 import { GROUPS } from './muscles.js';
 import { normalizeCatalogRecord } from './library.js';
 import { normalizeProfile, templatesFollowDefaultStep } from './profile.js';
-import { BREAK, BUILTIN_IDS, isTypeId, templateTypeIds, normalizeTypes, withKnownTypes } from './types.js';
+import { BREAK, BUILTIN_IDS, isTypeId, templateTypeIds, normalizeTypes, withKnownTypes, typeById, defaultTypes, hasTemplate } from './types.js';
 import { cleanMeasurements, normalizeTracked, DEFAULT_TRACKED } from './measure.js';
 import { normalizeNutrition, normalizeIntake } from './nutrition.js';
 import { normalizeSplits } from './splits.js';
 import { LIMITS, safeKey } from './importguard.js';
-import { normalizeCardio, migrateTreadmillMinutes } from './cardio.js';
+import { normalizeCardio, migrateTreadmillMinutes, isCardioItem, normalizeCardioItem, cardioItem, addLegacyTreadmill } from './cardio.js';
 
-export const APP_VERSION = '1.15.0'; // keep in sync with VERSION in sw.js (a test checks this)
-export const SCHEMA_VERSION = 11;
+export const APP_VERSION = '1.16.0'; // keep in sync with VERSION in sw.js (a test checks this)
+export const SCHEMA_VERSION = 12;
 
 // Session types are data since v7 (js/types.js): ids are stable, names and colours are editable.
 // BREAK is a deliberate rest day: valid in the schedule and as a logged day, but not a type.
@@ -150,6 +150,7 @@ export function normalizeSchedule(raw, fallbackFrom) {
 // ---------------------------------------------------------------------------
 export const DEFAULT_TARGET = { sets: 3, repsMin: 8, repsMax: 12 };
 // Template item: { name, sets, repsMin, repsMax, weightStep (kg), restSeconds } — null step/rest = the settings default
+// or (v12) a cardio item { name, kind: 'cardio', minutes } — minutes = default time (null = none); see cardio.js.
 const ISO = 60; // isolation work
 const HEAVY = 180; // big compound lifts
 const T = (name, sets, repsMin, repsMax, restSeconds = null) => ({ name, sets, repsMin, repsMax, weightStep: null, restSeconds });
@@ -181,6 +182,9 @@ export const DEFAULT_TEMPLATES = {
     T('Romanian Deadlift', 3, 8, 10), T('Overhead Press', 3, 8, 10),
   ],
 };
+
+/** A cardio type's starting template (the Cardio day opens with a Treadmill entry, Time to fill in). */
+export const defaultCardioTemplate = () => [cardioItem('Treadmill')];
 
 const intIn = (v, lo, hi) => {
   if (v === '' || v == null) return null;
@@ -230,12 +234,14 @@ export function normalizeTemplates(raw) {
   // Every lifting type gets a list (built-ins fall back to their defaults); any other known type keeps its own.
   const ids = new Set([...TEMPLATE_TYPES, ...templateTypeIds(), ...Object.keys(raw ?? {}).filter(isTypeId)].filter(safeKey));
   for (const type of ids) {
-    const list = Array.isArray(raw?.[type]) ? raw[type] : DEFAULT_TEMPLATES[type] ?? [];
+    const fallback = DEFAULT_TEMPLATES[type] ?? (typeById(type)?.kind === 'cardio' ? defaultCardioTemplate() : []);
+    const list = Array.isArray(raw?.[type]) ? raw[type] : fallback;
     const seen = new Set();
     out[type] = list.map((item) => {
       const name = cleanName(typeof item === 'string' ? item : item?.name);
       if (!name || seen.has(name.toLowerCase())) return null;
       seen.add(name.toLowerCase());
+      if (isCardioItem(item)) return normalizeCardioItem(item, cleanName); // v12: cardio anywhere in the order
       const target = typeof item === 'string' ? null : normalizeTarget(item);
       return {
         name,
@@ -469,7 +475,35 @@ export const SESSION_MIGRATIONS = {
   9: (s) => ({ ...s, v: 10 }),
   // v10 → v11: a workout's treadmill minutes become a Treadmill cardio entry in it (cardio.js); the field goes.
   10: (s) => ({ ...migrateTreadmillMinutes(s, uid), v: 11 }),
+  // v11 → v12: sessions unchanged; templates and saved splits can hold cardio items (see legacyTreadmill below).
+  11: (s) => ({ ...s, v: 12 }),
 };
+
+/**
+ * v11 → v12: the pre-1.14 "default treadmill minutes" setting (it pre-filled Treadmill on every training day)
+ * becomes a Treadmill item with that time in every lifting and cardio template, current and in saved splits.
+ * Works on raw data (templates may be null = the defaults, custom types may not be registered yet).
+ * → { templates, splits, minutes, changedTypes: [ids], changedSplits: n } — minutes null = nothing to do.
+ */
+export function legacyTreadmill({ templates, sessionTypes, splits, minutes }) {
+  const types = (normalizeTypes(sessionTypes) ?? defaultTypes()).filter((t) => hasTemplate(t) && !t.archived);
+  const base = { ...(templates && typeof templates === 'object' && !Array.isArray(templates) ? templates : {}) };
+  for (const t of types) {
+    if (!Array.isArray(base[t.id])) base[t.id] = DEFAULT_TEMPLATES[t.id] ?? (t.kind === 'cardio' ? defaultCardioTemplate() : []);
+  }
+  const r = addLegacyTreadmill(base, types.map((t) => t.id), minutes);
+  if (!r.changed.length) return { templates, splits, minutes: null, changedTypes: [], changedSplits: 0 };
+  let changedSplits = 0;
+  const nextSplits = Array.isArray(splits) ? splits.map((sp) => {
+    if (!sp || typeof sp !== 'object' || !Array.isArray(sp.types)) return sp;
+    const ids = sp.types.filter((t) => hasTemplate({ kind: t?.kind ?? 'lift' })).map((t) => t?.id);
+    const x = addLegacyTreadmill(sp.templates, ids, minutes);
+    if (!x.changed.length) return sp;
+    changedSplits++;
+    return { ...sp, templates: x.templates };
+  }) : splits;
+  return { templates: r.templates, splits: nextSplits, minutes: r.minutes, changedTypes: r.changed, changedSplits };
+}
 
 // ---------------------------------------------------------------------------
 // Body log: one entry per date { date, weight (kg) | null, waist (cm) | null, …other sites (cm), bodyFat (%),
@@ -585,7 +619,8 @@ export const BACKUP_MIGRATIONS = {
       : data.sessions,
     splits: Array.isArray(data.splits) ? data.splits : [],
   }),
-  // v10 → v11: treadmill minutes become Treadmill cardio entries (sessions above); the default-minutes setting goes.
+  // v10 → v11: treadmill minutes become Treadmill cardio entries (sessions above). The default-minutes setting is
+  // kept for the v11 → v12 step, which turns it into template items.
   10: (data) => ({
     ...data,
     schemaVersion: 11,
@@ -593,6 +628,22 @@ export const BACKUP_MIGRATIONS = {
       ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[10](s) : s))
       : data.sessions,
   }),
+  // v11 → v12: the old default-treadmill-minutes setting (still in files from before 1.14) becomes a Treadmill
+  // item with that time in the templates and saved splits; the setting goes.
+  11: (data) => {
+    const { defaultCardioMinutes, ...settings } = data.settings && typeof data.settings === 'object' ? data.settings : {};
+    const r = legacyTreadmill({ templates: data.templates, sessionTypes: data.sessionTypes, splits: data.splits, minutes: defaultCardioMinutes });
+    return {
+      ...data,
+      schemaVersion: 12,
+      settings: data.settings ? settings : data.settings,
+      templates: r.minutes == null ? data.templates : r.templates,
+      splits: r.minutes == null ? data.splits : r.splits,
+      sessions: Array.isArray(data.sessions)
+        ? data.sessions.map((s) => (s && typeof s === 'object' ? SESSION_MIGRATIONS[11](s) : s))
+        : data.sessions,
+    };
+  },
 };
 
 /** Upgrade a stored session record. Returns { session, changed }. */

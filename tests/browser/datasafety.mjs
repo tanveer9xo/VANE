@@ -117,12 +117,23 @@ check(!(await exists('#blocked')) && (await exists('.cal-view')), 'format v10 da
 const after = JSON.parse(await raw());
 const snaps1 = await snapshots();
 check(snaps1.length === 1 && snaps1[0].from === 10 && snaps1[0].n === 4, `a snapshot was taken first (${J(snaps1)})`);
-check(after.meta.schemaVersion === 11 && after.sessions.every((s) => s.v === 11), 'the data is now format 11, every record');
+check(after.meta.schemaVersion === 12 && after.sessions.every((s) => s.v === 12), 'the data is now format 12, every record');
 const setsOf = (sessions) => sessions.flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').flatMap((e) => e.sets.map((x) => [s.date, e.name, x.weight, x.reps, x.done, x.type])));
 check(after.sessions.length === before.sessions.length && J(setsOf(after.sessions)) === J(setsOf(before.sessions)), 'every workout and every set unchanged');
 check(J(after.sessions.map((s) => [s.date, s.type])) === J(before.sessions.map((s) => [s.date, s.type])), 'every session type unchanged');
-check(J(after.body) === J(before.body) && J(after.meta.sessionTypes) === J(before.meta.sessionTypes) && J(after.meta.splits) === J(before.meta.splits)
-  && J(after.meta.profile) === J(before.meta.profile) && J(after.meta.templates) === J(before.meta.templates), 'Body log, types, saved splits, profile and templates unchanged');
+check(J(after.body) === J(before.body) && J(after.meta.sessionTypes) === J(before.meta.sessionTypes)
+  && J(after.meta.profile) === J(before.meta.profile), 'Body log, types and profile unchanged');
+// v12: the old 20-minute default treadmill is now Treadmill (20 min), last in each template and saved split.
+// (Each template the old data had, compared without cardio; types it had no template for get the defaults.)
+const noCardio = (t, keys = Object.keys(before.meta.templates)) => J(keys.map((k) => (t?.[k] ?? []).filter((i) => i.kind !== 'cardio')));
+const tread = { name: 'Treadmill', kind: 'cardio', minutes: 20 };
+check(noCardio(after.meta.templates) === noCardio(before.meta.templates) && J(after.meta.templates.Push.at(-1)) === J(tread)
+  && J(after.meta.templates['t-arms'].at(-1)) === J(tread) && J(after.meta.templates.Cardio) === J([tread]),
+  `templates keep every exercise, plus Treadmill (20 min) from the old setting (${J(after.meta.templates.Push.map((i) => i.name))})`);
+check(J(after.meta.splits.map((sp) => [sp.id, sp.name, sp.days, sp.types])) === J(before.meta.splits.map((sp) => [sp.id, sp.name, sp.days, sp.types]))
+  && after.meta.splits.every((sp) => J(sp.templates.Push?.at(-1)) === J(tread)),
+  'saved splits kept, with Treadmill in their templates');
+check(!('defaultCardioMinutes' in after.meta.settings), 'the old setting is gone from storage');
 check(after.sessions[0].exercises.some((e) => e.kind === 'cardio' && e.name === 'Treadmill' && e.cardio.minutes === 20 && e.cardio.done), 'old treadmill minutes became a Treadmill entry');
 
 // ---- 2. A migration whose check fails: rolled back, explained, exportable ----
@@ -160,6 +171,20 @@ await reload();
 const snaps3 = await snapshots();
 check(snaps3.length === 2 && snaps3[0].id > snaps1[0].id && !snaps3.some((x) => x.id === snaps1[0].id), `only the last 2 snapshots are kept (${snaps3.map((x) => x.id).join(', ')})`);
 check(!(await exists('#blocked')) && (await ev(`import('./js/store.js').then((m) => m.allSessions().length)`)) === 4, 'and the app opens normally on the migrated data');
+
+// ---- 4b. A 1.15 phone (format 11) whose settings were saved since, so the old treadmill setting is gone from
+// them: the snapshot taken before 1.15 still has it, and it's used. ----
+const migrated = JSON.parse(await raw());
+const { defaultCardioMinutes: _old, ...settings11 } = V10.meta.settings;
+await writeRaw({
+  sessions: migrated.sessions.map((x) => ({ ...x, v: 11 })), body: V10.body,
+  meta: { ...V10.meta, schemaVersion: 11, settings: settings11 },
+});
+await reload();
+const after11 = JSON.parse(await raw());
+check(!(await exists('#blocked')) && after11.meta.schemaVersion === 12 && J(after11.meta.templates.Push.at(-1)) === J(tread),
+  `format 11 without the setting: Treadmill (20 min) from the pre-1.15 snapshot (${J(after11.meta.templates.Push.map((i) => [i.name, i.minutes ?? null]))})`);
+check(J(after11.sessions.map((x) => x.exercises.length)) === J(migrated.sessions.map((x) => x.exercises.length)), 'workouts unchanged (no second Treadmill entry)');
 
 // ---- 5. Settings → Backup: storage protection, last backup ----
 await ev(`location.hash = '#/settings'; true`);

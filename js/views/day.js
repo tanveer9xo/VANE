@@ -20,7 +20,7 @@ import {
   copySessionTo,
 } from '../plan.js';
 import { suggest } from '../progression.js';
-import { startRest, formatClock, formatElapsed, buzz } from '../timer.js';
+import { startRest, stopRest, getRest, formatClock, formatElapsed, buzz } from '../timer.js';
 import { setKeepAwake, wakeLockSupported } from '../wakelock.js';
 import { todayISO, addDays, formatDayTitle, formatShort, monthOf, monthKey, relativeDay, isValidISODate } from '../dates.js';
 import { openExercisePicker } from './picker.js';
@@ -65,14 +65,10 @@ export function renderDay(root, date) {
   let mini = null;
   const cardioTimers = new Set(); // running Start/Stop timers on cardio cards
 
-  // A cardio-kind type with no template (the Cardio day) starts with a Treadmill entry, as the chip used to.
-  const cardioStart = (type) => (typeById(type)?.kind === 'cardio' ? [newCardioExercise('Treadmill', uid())] : []);
-
+  // A day starts from its type's template, in order, cardio included (a Cardio day's template is Treadmill).
   function buildSession(type) {
     const s = newSession(date, store.state.settings, type);
-    if (store.state.templates[type]?.length) {
-      s.exercises = exercisesFromTemplate(type, store.state.templates, store.allSessions(), date, today);
-    } else s.exercises = cardioStart(type);
+    s.exercises = exercisesFromTemplate(type, store.state.templates, store.allSessions(), date, today);
     return s;
   }
 
@@ -383,9 +379,7 @@ export function renderDay(root, date) {
       session.startedAt = null;
       session.finishedAt = null;
     } else {
-      session.exercises = store.state.templates[t]?.length
-        ? exercisesFromTemplate(t, store.state.templates, store.allSessions(), date, today)
-        : cardioStart(t);
+      session.exercises = exercisesFromTemplate(t, store.state.templates, store.allSessions(), date, today);
     }
     await structural();
   }
@@ -818,6 +812,7 @@ export function renderDay(root, date) {
     row.classList.toggle('done', set.done);
     // Every set ticked: the workout is finished (the only other way is tapping Finish workout).
     const allDone = session.exercises.length && session.exercises.every(isExDone);
+    const completesWorkout = set.done && allDone;
     if (set.done && allDone && !session.finishedAt && when !== 'future') {
       session.finishedAt = Date.now();
       autoFinished = true;
@@ -831,7 +826,8 @@ export function renderDay(root, date) {
       buzz(12);
       row.closest('.ex')?.querySelector('.hint')?.remove(); // the hint was about before you started
       if (when === 'today' && !session.startedAt) session.startedAt = Date.now();
-      if (when === 'today' && store.state.settings.autoStartRest !== false) startRest(restSecondsFor(ex, store.state.settings), exLabel(ex.name), typeColor(session.type));
+      // No rest after the set that completes the workout: there's no next set to rest for (an earlier rest stops).
+      if (completesWorkout) { if (getRest()) stopRest(); } else if (when === 'today' && store.state.settings.autoStartRest !== false) startRest(restSecondsFor(ex, store.state.settings), exLabel(ex.name), typeColor(session.type));
     }
     changed();
     tickClock();

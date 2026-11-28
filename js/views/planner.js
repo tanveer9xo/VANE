@@ -1,5 +1,6 @@
 // Planner tab: weekly schedule (weekday → type / Break), split presets, your session types, and per-type
-// templates with sets × rep ranges. Types are data (js/types.js): everything here refers to them by id.
+// templates with sets × rep ranges (and, v12, cardio items with a default time, anywhere in the order). Types are
+// data (js/types.js): everything here refers to them by id.
 import { h, icon, plate, toast, confirmDialog, sheet } from '../ui.js';
 import * as store from '../store.js';
 import { exName } from '../library.js';
@@ -10,16 +11,17 @@ import {
 } from '../model.js';
 import { currentWeek, templateFor, scheduledFor } from '../plan.js';
 import { weekdayLabels, todayISO, addDays } from '../dates.js';
-import { exerciseUsage, lastSetsFor } from '../stats.js';
+import { exerciseUsage, lastSetsFor, fmtNum } from '../stats.js';
 import { openExercisePicker } from './picker.js';
+import { activityFor, cardioItem, FIELDS as CARDIO_FIELDS } from '../cardio.js';
 import { GROUPS } from '../muscles.js';
 import { MAX_SPLITS, splitDaysText } from '../splits.js';
 import {
-  pickerTypes, allTypes, typeById, typeName, typeColor, typeShort, PRESETS, PALETTE_KEYS, COLOR_NAMES, nextColor, autoShort,
+  pickerTypes, allTypes, typeById, typeName, typeColor, typeShort, PRESETS, PALETTE_KEYS, COLOR_NAMES, nextColor, autoShort, hasTemplate,
 } from '../types.js';
 
-/** Lifting types you can pick (they have templates), plus `keep` if it's hidden or archived. */
-const liftTypes = (keep) => [...pickerTypes().filter((t) => t.kind === 'lift'), ...(keep && typeById(keep) && !pickerTypes().some((t) => t.id === keep) ? [typeById(keep)] : [])];
+/** Types with a template you can pick (lifting and cardio types), plus `keep` if it's hidden or archived. */
+const liftTypes = (keep) => [...pickerTypes().filter(hasTemplate), ...(keep && typeById(keep) && !pickerTypes().some((t) => t.id === keep) ? [typeById(keep)] : [])];
 
 let selectedType = null; // remembered while the app is open
 
@@ -198,7 +200,7 @@ export function renderPlanner(root) {
     items = templateFor(selectedType, store.state.templates).map((it) => ({ ...it }));
     tplCard.replaceChildren(
       h('h2', { id: 'tpl-h' }, 'Templates'),
-      h('p', { class: 'muted' }, 'Loaded when you start a day of that type, with weights from last time. The muscle tag feeds “Sets per muscle” in Progress.'),
+      h('p', { class: 'muted' }, 'Loaded when you start a day of that type, with weights from last time. Cardio can go anywhere in the order, with a default time. The muscle tag feeds “Sets per muscle” in Progress.'),
       h('fieldset', { class: 'chips tpl-types' },
         h('legend', { class: 'sr-only' }, 'Template to edit'),
         liftTypes(selectedType).map((t) => h('label', { class: `chip t-${typeColor(t.id)}` },
@@ -207,7 +209,7 @@ export function renderPlanner(root) {
             onchange: async () => { await persist(); selectedType = t.id; drawTemplates(); },
           }),
           h('span', {}, t.name, h('span', { class: 'chip-count' }, String(templateFor(t.id, store.state.templates).length)))))),
-      !selectedType ? h('p', { class: 'muted empty-ex' }, 'No lifting types to edit. Add one under Session types.')
+      !selectedType ? h('p', { class: 'muted empty-ex' }, 'No lifting or cardio types to edit. Add one under Session types.')
         : items.length
           ? h('ol', { class: 'tpl-list', 'aria-label': `${typeName(selectedType)} template` }, items.map(itemRow))
           : h('p', { class: 'muted empty-ex' }, `No exercises in the ${typeName(selectedType)} template yet. Add one below.`),
@@ -219,7 +221,50 @@ export function renderPlanner(root) {
     }
   }
 
+  // Move up / down / remove, the same for every item.
+  const tools = (it, i, id) => h('span', { class: 'tpl-tools' },
+    h('button', {
+      class: 'icon-btn subtle small', 'aria-label': `Move ${exName(it.name)} up`, disabled: i === 0,
+      dataset: { fkey: `up-${id}` }, onclick: () => move(i, -1),
+    }, icon('chevU')),
+    h('button', {
+      class: 'icon-btn subtle small', 'aria-label': `Move ${exName(it.name)} down`, disabled: i === items.length - 1,
+      dataset: { fkey: `down-${id}` }, onclick: () => move(i, 1),
+    }, icon('chevD')),
+    h('button', {
+      class: 'icon-btn subtle small', 'aria-label': `Remove ${exName(it.name)} from ${typeName(selectedType)} template`,
+      onclick: async () => { items.splice(i, 1); await persist(); drawTemplates(); },
+    }, icon('x')));
+
+  // A cardio item: the activity and a default time (optional). One entry on the day, no sets.
+  function cardioRow(it, i) {
+    const id = `cardio-${exerciseKey(it.name)}`;
+    return h('li', { class: 'tpl-item tpl-cardio', dataset: { kind: 'cardio' } },
+      h('div', { class: 'tpl-top' },
+        h('span', { class: 'tpl-n', 'aria-hidden': 'true' }, i + 1),
+        h('span', { class: 'tpl-cardio-name' }, icon(activityFor(it.name)?.icon ?? 'heart-rate-monitor'), h('strong', {}, it.name)),
+        tools(it, i, id)),
+      h('div', { class: 'tpl-target' },
+        h('span', { class: 'badge-cardio' }, 'Cardio'),
+        h('label', { class: 'muted', for: `min-${id}` }, 'Default time'),
+        h('span', { class: 'tpl-min' }, h('input', {
+          id: `min-${id}`, class: 'num-input tpl-num wide', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '–',
+          'aria-label': `${it.name}: default time in minutes (blank = none)`, value: it.minutes == null ? '' : fmtNum(it.minutes, 1), dataset: { fkey: `min-${id}` },
+          oninput: (e) => {
+            const blank = e.target.value.trim() === '';
+            const v = blank ? null : CARDIO_FIELDS.minutes(e.target.value);
+            e.target.setAttribute('aria-invalid', blank || v != null ? 'false' : 'true');
+            if (!blank && v == null) return;
+            it.minutes = v;
+            persistSoon();
+          },
+          onchange: (e) => { e.target.value = it.minutes == null ? '' : fmtNum(it.minutes, 1); e.target.setAttribute('aria-invalid', 'false'); },
+        }), h('span', { class: 'muted' }, 'min')),
+        h('span', { class: 'fine tpl-cardio-hint' }, 'Pre-filled on the day; distance, speed and the rest you add there.')));
+  }
+
   function itemRow(it, i) {
+    if (it.kind === 'cardio') return cardioRow(it, i);
     const id = exerciseKey(it.name);
     const num = (field, label, min, max) => h('input', {
       class: 'num-input tpl-num', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', autocomplete: 'off',
@@ -247,19 +292,7 @@ export function renderPlanner(root) {
           'aria-label': `Exercise ${i + 1} name`, dataset: { fkey: `name-${id}` },
           onchange: (e) => rename(i, e.target),
         }),
-        h('span', { class: 'tpl-tools' },
-          h('button', {
-            class: 'icon-btn subtle small', 'aria-label': `Move ${exName(it.name)} up`, disabled: i === 0,
-            dataset: { fkey: `up-${id}` }, onclick: () => move(i, -1),
-          }, icon('chevU')),
-          h('button', {
-            class: 'icon-btn subtle small', 'aria-label': `Move ${exName(it.name)} down`, disabled: i === items.length - 1,
-            dataset: { fkey: `down-${id}` }, onclick: () => move(i, 1),
-          }, icon('chevD')),
-          h('button', {
-            class: 'icon-btn subtle small', 'aria-label': `Remove ${exName(it.name)} from ${typeName(selectedType)} template`,
-            onclick: async () => { items.splice(i, 1); await persist(); drawTemplates(); },
-          }, icon('x')))),
+        tools(it, i, id)),
       h('div', { class: 'tpl-target' },
         num('sets', 'sets', 1, 20), h('span', { class: 'muted' }, 'sets ×'),
         num('repsMin', 'minimum reps', 1, 100), h('span', { class: 'muted' }, '–'),
@@ -328,11 +361,23 @@ export function renderPlanner(root) {
     const name = await openExercisePicker({
       names: store.allExerciseNames(),
       usage: exerciseUsage(list, today),
-      present: new Set(items.map((it) => exerciseKey(it.name))),
+      present: new Set(items.filter((it) => it.kind !== 'cardio').map((it) => exerciseKey(it.name))),
       type: selectedType,
+      cardio: true,
+      title: `Add to ${typeName(selectedType)}`,
       lastFor: (key) => lastSetsFor(list, key, addDays(today, 1), today),
     });
     if (!name) return;
+    const act = activityFor(name);
+    if (act) {
+      // Cardio: one item with an optional default time; move it anywhere with the arrows.
+      if (items.some((it) => it.kind === 'cardio' && it.name.toLowerCase() === act.name.toLowerCase())) { toast(`${act.name} is already in this template`); return; }
+      items.push(cardioItem(act.name));
+      await persist();
+      drawTemplates();
+      tplCard.querySelector(`[data-fkey="min-cardio-${CSS.escape(exerciseKey(act.name))}"]`)?.focus();
+      return;
+    }
     const key = exerciseKey(name);
     const known = store.allExerciseNames().find((n) => n.key === key);
     const display = known?.name ?? cleanName(name);
@@ -367,7 +412,7 @@ export function renderPlanner(root) {
       h('span', { class: 'type-text' },
         h('strong', {}, t.name),
         h('small', {}, [t.short !== t.name ? `Shows as “${t.short}”` : null, t.color ? COLOR_NAMES[t.color] : 'Neutral', t.hidden && !t.archived ? 'Hidden' : null,
-          t.archived ? 'Archived: past days keep it' : null, t.kind === 'lift' ? `${templateFor(t.id, store.state.templates).length} exercises` : null].filter(Boolean).join(' · '))),
+          t.archived ? 'Archived: past days keep it' : null, hasTemplate(t) ? `${templateFor(t.id, store.state.templates).length} exercises` : null].filter(Boolean).join(' · '))),
       t.archived ? null : h('button', { class: 'icon-btn', 'aria-label': `Edit ${t.name}`, onclick: () => editType(t.id) }, icon('notes')),
       t.archived ? null : h('button', { class: 'icon-btn', 'aria-label': `Delete ${t.name}`, onclick: () => removeType(t.id) }, icon('trash')));
     typesCard.replaceChildren(

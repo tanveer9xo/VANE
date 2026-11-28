@@ -33,8 +33,10 @@ export const templateFor = (type, templates) => templates?.[type] ?? [];
  * One planned exercise, all sets not done. Weights/reps come from the last logged session:
  * its warm-ups carry over as warm-ups, then `item.sets` working sets (or as many as last time).
  * `item` may be a template item { sets, repsMin, repsMax, weightStep, restSeconds } or null.
+ * A cardio item (v12) gives a cardio entry with its default Time filled in, not Done.
  */
 export function plannedExercise(name, item, sessions, date, today) {
+  if (item?.kind === 'cardio') return newCardioExercise(name, uid(), item.minutes);
   const last = lastLoggedSets(sessions, exerciseKey(name), date, today);
   const warmups = (last?.sets ?? []).filter((s) => s.type === 'warmup');
   const working = (last?.sets ?? []).filter((s) => s.type !== 'warmup');
@@ -92,7 +94,8 @@ export function copySessionTo(source, date, sessions, settings, today) {
   return s;
 }
 
-/** Exercises for a fresh day of `type` (deep copies — later template edits never touch the session). */
+/** Exercises for a fresh day of `type`, in the template's order, cardio included (deep copies — later template
+ * edits never touch the session). */
 export function exercisesFromTemplate(type, templates, sessions, date, today) {
   return templateFor(type, templates).map((item) => plannedExercise(item.name, item, sessions, date, today));
 }
@@ -103,7 +106,7 @@ export function exercisesFromTemplate(type, templates, sessions, date, today) {
  */
 export function templateItemFor(type, name, templates) {
   const key = exerciseKey(name);
-  const find = (list) => list?.find((t) => exerciseKey(t.name) === key) ?? null;
+  const find = (list) => list?.find((t) => t.kind !== 'cardio' && exerciseKey(t.name) === key) ?? null;
   return find(templates?.[type]) ?? Object.values(templates ?? {}).map(find).find(Boolean) ?? null;
 }
 

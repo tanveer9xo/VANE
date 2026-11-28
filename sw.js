@@ -1,9 +1,9 @@
 // Offline-first service worker: precache the whole app, serve from cache, update atomically.
 // Bump VERSION on every deploy (must match APP_VERSION in js/model.js — a test checks this).
-const VERSION = '1.15.0';
+const VERSION = '1.16.0';
 // The data format this version stores (= SCHEMA_VERSION in js/model.js; a test checks). The update banner asks a
 // waiting worker for it, to suggest a backup before an update that changes how data is stored.
-const SCHEMA = 11;
+const SCHEMA = 12;
 const CACHE = `workout-tracker-${VERSION}`;
 
 const ASSETS = [

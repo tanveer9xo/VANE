@@ -544,6 +544,13 @@ dialog::backdrop { background: var(--scrim); }
 .tpl-target .tpl-num { width: 54px; padding: 6px; }
 .tpl-target .tpl-num.wide { width: 64px; }
 .tpl-muscle { width: auto !important; min-width: 140px; }
+/* Cardio items in a template (v12): the activity, a Cardio tag and a default time. */
+.tpl-cardio-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.tpl-cardio-name strong { min-width: 0; overflow-wrap: break-word; }
+.tpl-cardio-name .icon { color: var(--accent); }
+.badge-cardio { flex: none; padding: 2px 8px; border-radius: var(--r-pill); background: var(--accent-tint); color: var(--accent); font-size: 0.75rem; font-weight: 700; }
+.tpl-cardio-hint { flex-basis: 100%; margin: 0; }
+.tpl-min { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .add-ex { margin-top: 4px; }
 
 /* ---------- settings ---------- */

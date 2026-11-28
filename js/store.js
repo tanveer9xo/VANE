@@ -4,7 +4,7 @@ import {
   APP_VERSION, SCHEMA_VERSION, DEFAULT_SETTINGS, DEFAULT_EXERCISES, DEFAULT_TEMPLATES,
   newSession, upgradeSessionRecord, exerciseKey, cleanName, isSessionEmpty, migrateBackup,
   normalizeSchedule, normalizeTemplates, defaultSchedule, pickSettings, normalizeBodyEntry, normalizeMuscles, DEFAULT_MUSCLES,
-  normalizeSkipReasons, SKIP_REASONS,
+  normalizeSkipReasons, SKIP_REASONS, defaultCardioTemplate,
 } from './model.js';
 import {
   loadLibrary, indexLibrary, buildCatalog, recordForName, recordFromLibrary, normalizeCatalogRecord, setTakenNames, exName,
@@ -32,6 +32,7 @@ export const state = {
   blocked: null, // { kind: 'newer' | 'failed', … } when the data can't be opened safely (see init)
   storedSchema: null,
   snapshotId: null,
+  migrationReport: null, // what the last data update changed (e.g. { treadmill: { minutes, types, splits } })
   sessions: new Map(), // date → session
   catalog: new Map(), // exercise key → { key, name, libId, primary, secondary, equipment, custom, favourite, needsMuscle }
   library: [], // the bundled exercise library (data/exercises.json)
@@ -69,11 +70,20 @@ export async function init() {
   }
   // 2. An older format: copy everything into a snapshot before changing anything (the last 2 are kept).
   const migrating = stored < SCHEMA_VERSION && hasData(raw);
+  // v11 → v12 needs the old default-treadmill-minutes setting. If these settings no longer hold it (changed
+  // since 1.15 removed it), the newest snapshot from before 1.15 still does. Read before a new snapshot is saved.
+  let legacyCardioMinutes = null;
+  if (migrating && stored === 11 && !(raw.meta.settings && 'defaultCardioMinutes' in raw.meta.settings)) {
+    try {
+      const old = (await db.getSnapshots()).filter((x) => x.fromVersion <= 10).sort((a, b) => b.createdAt - a.createdAt)[0];
+      legacyCardioMinutes = old?.data?.meta?.find((r) => r.key === 'settings')?.value?.defaultCardioMinutes ?? null;
+    } catch (err) { console.warn(err); }
+  }
   if (migrating) state.snapshotId = await db.saveSnapshot(makeSnapshot(raw, stored), SNAPSHOTS_KEPT);
   // 3–4. Work the new data out in memory and check nothing was lost. On any failure nothing is written.
   let plan;
   try {
-    plan = migrateStored(raw, { today: todayISO() });
+    plan = migrateStored(raw, { today: todayISO(), legacyCardioMinutes });
     if (migrating) verifyMigration(raw, plan);
   } catch (err) {
     console.error(err);
@@ -81,6 +91,7 @@ export async function init() {
     return;
   }
   const p = plan.state;
+  state.migrationReport = migrating ? plan.report : null;
   state.types = p.types;
   setTypes(state.types);
   state.splits = p.splits;
@@ -113,7 +124,7 @@ export async function init() {
   state.libIndex = indexLibrary(state.library);
   const names = [
     ...allSessions().flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').map((e) => e.name)), // cardio isn't in the exercise catalog
-    ...Object.values(state.templates).flat().map((t) => t.name),
+    ...Object.values(state.templates).flat().filter((t) => t.kind !== 'cardio').map((t) => t.name),
   ];
   state.catalog = buildCatalog({
     names, v4Records: custom, v4Muscles: normalizeMuscles(muscles), v4Defaults: DEFAULT_MUSCLES, index: state.libIndex,
@@ -211,7 +222,7 @@ export async function syncCatalog() {
   if (!state.library.length) return;
   const names = [
     ...allSessions().flatMap((s) => s.exercises.filter((e) => e.kind !== 'cardio').map((e) => e.name)),
-    ...Object.values(state.templates).flat().map((t) => t.name),
+    ...Object.values(state.templates).flat().filter((t) => t.kind !== 'cardio').map((t) => t.name),
   ];
   const added = [];
   for (const n of names) {
@@ -273,7 +284,7 @@ export async function setPrimaryMuscle(name, group) {
 export function exercisesNeedingMuscle() {
   const used = new Set([
     ...allSessions().flatMap((s) => s.exercises.map((e) => keyOf(e.name))),
-    ...Object.values(state.templates).flat().map((t) => keyOf(t.name)),
+    ...Object.values(state.templates).flat().filter((t) => t.kind !== 'cardio').map((t) => keyOf(t.name)),
   ]);
   return [...state.catalog.values()].filter((r) => r.needsMuscle && used.has(r.key));
 }
@@ -333,7 +344,7 @@ export function typeHasHistory(id, today = todayISO()) {
 }
 
 /** Add a session type (next free colour) with an optional template. → the new type */
-export async function addSessionType(fields, template = []) {
+export async function addSessionType(fields, template = fields?.kind === 'cardio' ? defaultCardioTemplate() : []) {
   const { types, type } = addType(state.types, fields);
   await saveTypes(types);
   await saveTemplates({ ...state.templates, [type.id]: template });

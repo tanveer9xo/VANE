@@ -45,8 +45,9 @@ export function withKnownTypes(ids, fn) {
 
 /** The types offered in the Planner and the Day screen: not hidden, not archived. */
 export const pickerTypes = () => allTypes().filter((t) => !t.hidden && !t.archived);
-/** Types that have an exercise template (lifting types). */
-export const templateTypeIds = () => allTypes().filter((t) => t.kind === 'lift').map((t) => t.id);
+/** Types that have an exercise template: lifting types, and (v12) cardio types (e.g. Treadmill 20 min). */
+export const hasTemplate = (t) => t?.kind === 'lift' || t?.kind === 'cardio';
+export const templateTypeIds = () => allTypes().filter(hasTemplate).map((t) => t.id);
 
 export const typeName = (id) => (id === BREAK ? 'Break' : registry.get(id)?.name ?? (id ? String(id) : ''));
 export const typeShort = (id) => (id === BREAK ? 'Break' : registry.get(id)?.short ?? autoShort(typeName(id)));

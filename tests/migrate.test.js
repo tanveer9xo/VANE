@@ -17,7 +17,7 @@ function fixture(v) {
   const set = (weight, reps, extra = {}) => ({ weight, reps, ...(v >= 2 ? { done: true } : {}), ...(v >= 3 ? { type: 'working' } : {}), ...extra });
   const ex = (name, sets) => ({ id: `${name}-id`, name, sets, ...(v >= 2 ? { target: null } : {}), ...(v >= 3 ? { weightStep: null, restSeconds: null, hintDismissed: false } : {}), ...(v >= 4 ? { note: '' } : {}) });
   const session = (date, type, exercises, extra = {}) => ({
-    v, date, type, notes: '', cardioMinutes: null, createdAt: 1, updatedAt: 2, exercises,
+    v, date, type, notes: '', ...(v <= 10 ? { cardioMinutes: null } : {}), createdAt: 1, updatedAt: 2, exercises,
     ...(v >= 4 ? { startedAt: null, finishedAt: null } : {}), ...extra,
   });
   const sessions = [
@@ -27,7 +27,7 @@ function fixture(v) {
     ...(v >= 7 ? [session('2026-11-05', 't-arms', [ex('EZ-Bar Curl', [set(25, 10)])])] : []),
   ];
   const m = {};
-  m.settings = meta({ weekStartsOn: 0, weightStep: 2.5, defaultRestSeconds: 120, ...(v === 1 ? { templates: { Push: ['DB Chest Press', 'Dips'] }, schedule: ['Break', 'Push', 'Pull', 'Legs', 'Break', 'Upper', 'Lower'] } : {}) });
+  m.settings = meta({ weekStartsOn: 0, weightStep: 2.5, defaultRestSeconds: 120, defaultCardioMinutes: 20, ...(v === 1 ? { templates: { Push: ['DB Chest Press', 'Dips'] }, schedule: ['Break', 'Push', 'Pull', 'Legs', 'Break', 'Upper', 'Lower'] } : {}) });
   if (v >= 2) {
     m.schedule = [{ from: '2026-11-01', days: { sun: BREAK, mon: 'Push', tue: 'Legs', wed: BREAK, thu: 'Pull', fri: 'Upper', sat: BREAK } }];
     m.templates = { Push: [{ name: 'DB Chest Press', sets: 4, repsMin: 6, repsMax: 10, ...(v >= 3 ? { weightStep: 1, restSeconds: 150 } : {}) }, { name: 'Dips', sets: 3, repsMin: 8, repsMax: 12 }] };
@@ -56,7 +56,7 @@ const workouts = (sessions) => sessions.map((s) => ({
   date: s.date, type: s.type === 'Rest' ? BREAK : s.type, notes: s.notes ?? '',
   exercises: s.exercises.filter((e) => e.kind !== 'cardio').map((e) => ({ name: e.name, sets: e.sets.map((x) => ({ weight: x.weight, reps: x.reps, done: x.done ?? true, type: x.type ?? 'working' })) })),
 }));
-const tplItems = (t) => Object.fromEntries(Object.entries(t ?? {}).map(([k, list]) => [k, list.map((i) => ({ name: typeof i === 'string' ? i : i.name, sets: i.sets ?? 3, repsMin: i.repsMin ?? 8, repsMax: i.repsMax ?? 12 }))]));
+const tplItems = (t) => Object.fromEntries(Object.entries(t ?? {}).map(([k, list]) => [k, list.filter((i) => i?.kind !== 'cardio').map((i) => ({ name: typeof i === 'string' ? i : i.name, sets: i.sets ?? 3, repsMin: i.repsMin ?? 8, repsMax: i.repsMax ?? 12 }))]));
 
 for (let v = 1; v < SCHEMA_VERSION; v++) {
   test(`stored format v${v} → v${SCHEMA_VERSION}: workouts, sets, types, templates, splits, Body log, profile and settings unchanged`, () => {
@@ -74,6 +74,14 @@ for (let v = 1; v < SCHEMA_VERSION; v++) {
     const want = v === 1 ? { Push: [{ name: 'DB Chest Press', sets: 3, repsMin: 8, repsMax: 12 }, { name: 'Dips', sets: 3, repsMin: 8, repsMax: 12 }] } : tplItems(raw.meta.templates);
     for (const [k, items] of Object.entries(want)) assert.deepEqual(tplItems({ [k]: s.templates[k] })[k], items, `template ${k}`);
     if (v >= 3) assert.equal(s.templates.Push[0].restSeconds, 150, 'rest settings kept');
+    // v12: the old 20-minute default treadmill becomes Treadmill (20 min), last in every lifting template, and
+    // the Cardio day's Treadmill gets the time; the setting itself goes.
+    for (const k of Object.keys(want)) assert.deepEqual(s.templates[k].at(-1), { name: 'Treadmill', kind: 'cardio', minutes: 20 }, `Treadmill last in ${k}`);
+    if (v < 7) assert.deepEqual(s.templates.Cardio, [{ name: 'Treadmill', kind: 'cardio', minutes: 20 }], 'Cardio day template (the built-in types)');
+    assert.equal('defaultCardioMinutes' in s.settings, false);
+    assert.equal('defaultCardioMinutes' in plan.writes.meta.settings, false, 'the setting is removed from storage');
+    assert.equal(plan.report.treadmill.minutes, 20);
+    if (v >= 10) assert.deepEqual(s.splits[0].templates.Push.map((i) => i.name), ['Dips', 'Treadmill'], 'saved split templates too');
     assert.deepEqual(s.splits.map((x) => [x.id, x.name, x.days]), (raw.meta.splits ?? []).map((x) => [x.id, x.name, x.days]), 'saved splits');
     assert.deepEqual(s.body.map(({ date, weight, waist }) => ({ date, weight, waist })), raw.body.map(({ date, weight, waist }) => ({ date, weight, waist })), 'Body log');
     if (v >= 6) assert.deepEqual({ ...s.profile, updatedAt: 0 }, { ...raw.meta.profile, updatedAt: 0 }, 'profile');
@@ -85,12 +93,57 @@ for (let v = 1; v < SCHEMA_VERSION; v++) {
   });
 }
 
-test('the current format is read as is: nothing to rewrite', () => {
+test('the current format is read as is: nothing to rewrite, and the treadmill step never runs twice', () => {
   const plan = migrateStored(fixture(10), { today: TODAY });
-  const raw11 = { ...fixture(10), sessions: plan.state.sessions, meta: { ...fixture(10).meta, schemaVersion: SCHEMA_VERSION } };
-  const again = migrateStored(raw11, { today: TODAY });
-  assert.equal(storedSchema(raw11), SCHEMA_VERSION);
+  const meta12 = { ...fixture(10).meta, ...plan.writes.meta, schemaVersion: SCHEMA_VERSION };
+  const raw12 = { ...fixture(10), sessions: plan.state.sessions, meta: meta12 };
+  const again = migrateStored(raw12, { today: TODAY });
+  assert.equal(storedSchema(raw12), SCHEMA_VERSION);
   assert.equal(again.writes.sessions.length, 0);
+  assert.deepEqual(again.writes.meta, {}, 'nothing to write');
+  assert.deepEqual(again.state.templates, plan.state.templates, 'one Treadmill, not two');
+  // Even if a format-12 phone somehow still had the old setting, it's not applied again.
+  const odd = migrateStored({ ...raw12, meta: { ...meta12, settings: { ...meta12.settings, defaultCardioMinutes: 45 } } }, { today: TODAY });
+  assert.equal(odd.report.treadmill, null);
+});
+
+test('v11 → v12: the default treadmill minutes, wherever they are, become Treadmill in the templates', () => {
+  // 1.15 kept the stored setting: it's used.
+  const raw = fixture(11);
+  raw.meta.settings.defaultCardioMinutes = 15;
+  const plan = migrateStored(raw, { today: TODAY });
+  verifyMigration(raw, plan);
+  assert.deepEqual(plan.state.templates.Push.map((i) => i.name), ['DB Chest Press', 'Dips', 'Treadmill']);
+  assert.equal(plan.state.templates.Push.at(-1).minutes, 15);
+  assert.deepEqual(plan.report.treadmill, { minutes: 15, types: ['Push', 'Pull', 'Legs', 'Upper', 't-arms'], splits: 1 });
+  // Settings changed since (the key is gone): the snapshot from before 1.15 supplies it.
+  const gone = fixture(11);
+  delete gone.meta.settings.defaultCardioMinutes;
+  assert.equal(migrateStored(gone, { today: TODAY }).report.treadmill, null, 'no setting, no snapshot: nothing added');
+  const fromSnap = migrateStored(gone, { today: TODAY, legacyCardioMinutes: 25 });
+  assert.equal(fromSnap.state.templates.Pull.at(-1).minutes, 25);
+  // Set to 0 (off) before: nothing added.
+  const off = fixture(11);
+  off.meta.settings.defaultCardioMinutes = 0;
+  const p0 = migrateStored(off, { today: TODAY });
+  assert.equal(p0.report.treadmill, null);
+  assert.ok(Object.values(p0.state.templates).every((l) => l.filter((i) => i.kind === 'cardio').every((i) => i.minutes == null)));
+  // Archived types and "Other" types get nothing; a template that already has Treadmill isn't given a second.
+  const arch = fixture(11);
+  arch.meta.sessionTypes.push({ id: 't-old', name: 'Old', short: 'Old', color: null, kind: 'lift', builtin: false, hidden: false, archived: true, order: 9 },
+    { id: 't-misc', name: 'Misc', short: 'Misc', color: null, kind: 'other', builtin: false, hidden: false, archived: false, order: 10 });
+  arch.meta.templates.Push.unshift({ name: 'Treadmill', kind: 'cardio', minutes: null });
+  const pa = migrateStored(arch, { today: TODAY });
+  assert.equal(pa.state.templates['t-old'], undefined);
+  assert.equal(pa.state.templates['t-misc'], undefined);
+  assert.deepEqual(pa.state.templates.Push.map((i) => [i.name, i.minutes ?? null]), [['Treadmill', 20], ['DB Chest Press', null], ['Dips', null]], 'its time filled in, position kept');
+});
+
+test('the template check: an exercise dropped from a template stops the migration', () => {
+  const raw = fixture(11);
+  const plan = migrateStored(raw, { today: TODAY });
+  plan.state.templates.Push = plan.state.templates.Push.filter((i) => i.name !== 'Dips');
+  assert.throws(() => verifyMigration(raw, plan), /templates: 1 exercise would go missing/);
 });
 
 test('old treadmill minutes become a Treadmill entry; that is the only thing a migration adds', () => {

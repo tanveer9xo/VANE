@@ -110,7 +110,7 @@ export function plannedByGroup({ weekStart, getSession, plannedTypeFor, template
     const s = getSession(date);
     const items = s?.exercises?.length
       ? s.exercises.map((e) => ({ name: e.name, sets: e.sets.filter((x) => x.type !== 'warmup').length }))
-      : (templateFor(plannedTypeFor(date)) ?? []).map((t) => ({ name: t.name, sets: t.sets }));
+      : (templateFor(plannedTypeFor(date)) ?? []).filter((t) => t.kind !== 'cardio').map((t) => ({ name: t.name, sets: t.sets }));
     for (const it of items) {
       const groups = groupsOf(it.name);
       for (const g of GROUPS) out[g] += (it.sets ?? 0) * setWeight(groups, g);
